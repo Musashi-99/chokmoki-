@@ -135,4 +135,33 @@ class ProductService:
         
         result = await collection.delete_one({"_id": ObjectId(product_id)})
         return result.deleted_count > 0
+    
+    async def get_by_ids(self, product_ids: List[str], include_categories: bool = True) -> List[Dict[str, Any]]:
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        object_ids = [ObjectId(pid) for pid in product_ids if ObjectId.is_valid(pid)]
+        if not object_ids:
+            return []
+        
+        cursor = collection.find({"_id": {"$in": object_ids}})
+        products = await cursor.to_list(length=len(object_ids))
+        
+        result = []
+        category_service = CategoryService()
+        
+        for product in products:
+            product_dict = Product(**product).model_dump(by_alias=True)
+            
+            if include_categories and product_dict.get("categories"):
+                category_details = []
+                for cat_id in product_dict["categories"]:
+                    category = await category_service.get_by_id(str(cat_id))
+                    if category:
+                        category_details.append(category.model_dump(by_alias=True))
+                product_dict["category_details"] = category_details
+            
+            result.append(product_dict)
+        
+        return result
 

@@ -10,7 +10,7 @@ class ProductListQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ProductService()
         skip = params.get("skip", 0)
-        limit = params.get("limit", 20)
+        limit = params.get("take") or params.get("limit", 20)
         active = params.get("active")
         category_id = params.get("category_id")
         include_categories = params.get("include_categories", True)
@@ -42,7 +42,7 @@ class ProductSearchQuery(CommandQuery):
         service = ProductService()
         search_term = params.get("search_term")
         skip = params.get("skip", 0)
-        limit = params.get("limit", 20)
+        limit = params.get("take") or params.get("limit", 20)
         include_categories = params.get("include_categories", True)
         
         if not search_term:
@@ -55,11 +55,30 @@ class ProductSearchQuery(CommandQuery):
         }
 
 
+class ProductGetByIdsQuery(CommandQuery):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ProductService()
+        product_ids = params.get("ids", [])
+        include_categories = params.get("include_categories", True)
+        
+        if not product_ids:
+            raise ValueError("Product IDs are required")
+        
+        if not isinstance(product_ids, list):
+            raise ValueError("Product IDs must be a list")
+        
+        products = await service.get_by_ids(product_ids, include_categories=include_categories)
+        return {
+            "data": products,
+            "count": len(products)
+        }
+
+
 class CategoryListQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = CategoryService()
         skip = params.get("skip", 0)
-        limit = params.get("limit", 20)
+        limit = params.get("take") or params.get("limit", 20)
         
         categories = await service.list(skip=skip, limit=limit)
         return {
