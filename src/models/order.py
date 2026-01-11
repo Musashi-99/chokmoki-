@@ -1,19 +1,58 @@
 from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 from bson import ObjectId
+from datetime import datetime
 from src.models.product import PyObjectId
 
 
-class OrderItem(BaseModel):
-    product: dict
-    quantity: int
-
-
-class ShippingDetails(BaseModel):
-    phone: str
+class ShippingAddress(BaseModel):
+    _id: str
     email: str
-    clerk_token: str
-    address: str
+    full_name: str
+    phone: str
+    address_line1: str
+    address_line2: Optional[str] = ""
+    city: str
+    state: str
+    postal_code: str
+    country: str
+    is_default: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class OrderItemInput(BaseModel):
+    productId: str
+    productName: str
+    variant: Dict[str, str]
+    quantity: int
+    price: float
+    total: float
+
+
+class OrderPricingInput(BaseModel):
+    subtotal: float
+    discount: float
+    shipping: float
+    total: float
+
+
+class OrderCreateInput(BaseModel):
+    shippingAddress: ShippingAddress
+    items: List[OrderItemInput]
+    specialMessage: Optional[str] = ""
+    pricing: OrderPricingInput
+    userEmail: str
+    timestamp: str
+
+
+class ValidatedOrderItem(BaseModel):
+    product_id: str
+    product_name: str
+    variant: Dict[str, str]
+    quantity: int
+    unit_price: float
+    total_price: float
 
 
 class OrderStatus(BaseModel):
@@ -33,22 +72,22 @@ class OrderStatus(BaseModel):
 
 class Order(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    order_id: str
+    user_email: str
+    shipping_address: Dict[str, Any]
+    items: List[ValidatedOrderItem]
+    special_message: Optional[str] = ""
+    subtotal: float
+    discount: float
+    shipping: float
     total_amount: float
-    total_discount: float = 0
-    order_items: List[OrderItem] = []
-    shipping_details: ShippingDetails
     status: OrderStatus = Field(default_factory=lambda: OrderStatus(type="accepted"))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    raw_order_log: Dict[str, Any]
     
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,
-        "json_encoders": {ObjectId: str}
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()}
     }
-
-
-class OrderCreate(BaseModel):
-    total_amount: float
-    total_discount: float = 0
-    order_items: List[OrderItem] = []
-    shipping_details: ShippingDetails
 

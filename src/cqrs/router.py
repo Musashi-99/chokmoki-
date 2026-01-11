@@ -8,6 +8,7 @@ from src.cqrs.queries import (
     CategoryGetQuery,
     OrderListQuery,
     OrderGetQuery,
+    OrderLogQuery,
     ShippingAddressListQuery,
     ShippingAddressGetQuery
 )
@@ -37,6 +38,7 @@ class CQRSRouter:
         "category.get": CategoryGetQuery,
         "order.list": OrderListQuery,
         "order.get": OrderGetQuery,
+        "order.getLog": OrderLogQuery,
         "shippingAddress.list": ShippingAddressListQuery,
         "shippingAddress.get": ShippingAddressGetQuery,
     }

@@ -7,7 +7,7 @@ from src.services.contact_service import ContactService
 from src.services.shipping_address_service import ShippingAddressService
 from src.models.product import ProductCreate
 from src.models.category import CategoryCreate
-from src.models.order import OrderCreate, OrderStatus
+from src.models.order import OrderCreateInput, OrderStatus
 from src.models.contact import ContactCreate
 from src.models.shipping_address import ShippingAddressCreate, ShippingAddressUpdate
 from src.plugins.logger import logger
@@ -91,11 +91,18 @@ class CategoryDeleteMutation(CommandMutation):
 
 class OrderCreateMutation(CommandMutation):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        # TODO: Manual Clerk token validation should be done here
-        # Validate clerk_token from params["shipping_details"]["clerk_token"]
-        
         service = OrderService()
-        order_data = OrderCreate(**params)
+        
+        # Validate required fields
+        if "shippingAddress" not in params:
+            raise ValueError("shippingAddress is required")
+        if "items" not in params or not params["items"]:
+            raise ValueError("items are required")
+        if "userEmail" not in params:
+            raise ValueError("userEmail is required")
+        
+        # Create order with validation
+        order_data = OrderCreateInput(**params)
         order = await service.create(order_data)
         return {"data": order.model_dump(by_alias=True)}
 
@@ -103,11 +110,11 @@ class OrderCreateMutation(CommandMutation):
 class OrderStatusUpdateMutation(CommandMutation):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = OrderService()
-        order_id = params.get("id")
+        order_id = params.get("order_id") or params.get("id")
         status_data = params.get("status")
         
         if not order_id:
-            raise ValueError("Order ID is required")
+            raise ValueError("order_id is required")
         if not status_data:
             raise ValueError("Status is required")
         
