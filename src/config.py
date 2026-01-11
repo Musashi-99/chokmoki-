@@ -2,10 +2,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 from typing import Optional
 
-
+password_db = ""
 class Settings(BaseSettings):
     mongodb_uri: str = Field(
-        default="mongodb+srv://sourav:@test-cluster.hfj3cs6.mongodb.net/?appName=test-cluster",
+        default=f"mongodb+srv://sourav:{password_db}@test-cluster.hfj3cs6.mongodb.net/?appName=test-cluster",
         env="MONGODB_URI"
     )
     mongodb_db_name: str = Field(default="lowkey_ecom", env="MONGODB_DB_NAME")
