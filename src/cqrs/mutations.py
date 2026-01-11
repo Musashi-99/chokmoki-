@@ -3,9 +3,11 @@ from src.cqrs.base import CommandMutation
 from src.services.product_service import ProductService
 from src.services.category_service import CategoryService
 from src.services.order_service import OrderService
+from src.services.contact_service import ContactService
 from src.models.product import ProductCreate
 from src.models.category import CategoryCreate
 from src.models.order import OrderCreate, OrderStatus
+from src.models.contact import ContactCreate
 from src.plugins.logger import logger
 
 
@@ -114,4 +116,12 @@ class OrderStatusUpdateMutation(CommandMutation):
             raise ValueError("Order not found")
         
         return {"data": order.model_dump(by_alias=True)}
+
+
+class ContactCreateMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ContactService()
+        contact_data = ContactCreate(**params)
+        contact = await service.create(contact_data)
+        return {"data": contact.model_dump(by_alias=True)}
 

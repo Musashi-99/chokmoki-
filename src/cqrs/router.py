@@ -17,7 +17,8 @@ from src.cqrs.mutations import (
     CategoryUpdateMutation,
     CategoryDeleteMutation,
     OrderCreateMutation,
-    OrderStatusUpdateMutation
+    OrderStatusUpdateMutation,
+    ContactCreateMutation
 )
 
 
@@ -42,6 +43,7 @@ class CQRSRouter:
         "category.delete": CategoryDeleteMutation,
         "order.create": OrderCreateMutation,
         "order.updateStatus": OrderStatusUpdateMutation,
+        "contact.create": ContactCreateMutation,
     }
     
     @classmethod

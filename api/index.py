@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from bson import ObjectId
+from datetime import datetime
 import json
 from src.database.connection import db
 from src.cqrs.router import CQRSRouter
@@ -14,6 +15,8 @@ class JSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, ObjectId):
             return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
         return super().default(obj)
 
 
