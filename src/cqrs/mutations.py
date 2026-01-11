@@ -4,10 +4,12 @@ from src.services.product_service import ProductService
 from src.services.category_service import CategoryService
 from src.services.order_service import OrderService
 from src.services.contact_service import ContactService
+from src.services.shipping_address_service import ShippingAddressService
 from src.models.product import ProductCreate
 from src.models.category import CategoryCreate
 from src.models.order import OrderCreate, OrderStatus
 from src.models.contact import ContactCreate
+from src.models.shipping_address import ShippingAddressCreate, ShippingAddressUpdate
 from src.plugins.logger import logger
 
 
@@ -124,4 +126,49 @@ class ContactCreateMutation(CommandMutation):
         contact_data = ContactCreate(**params)
         contact = await service.create(contact_data)
         return {"data": contact.model_dump(by_alias=True)}
+
+
+class ShippingAddressCreateMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ShippingAddressService()
+        address_data = ShippingAddressCreate(**params)
+        address = await service.create(address_data)
+        return {"data": address.model_dump(by_alias=True)}
+
+
+class ShippingAddressUpdateMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ShippingAddressService()
+        address_id = params.pop("id")
+        email = params.pop("email")
+        
+        if not address_id:
+            raise ValueError("Address ID is required")
+        if not email:
+            raise ValueError("Email is required")
+        
+        update_data = ShippingAddressUpdate(**params)
+        address = await service.update(address_id, update_data, email)
+        if not address:
+            raise ValueError("Address not found or access denied")
+        
+        return {"data": address.model_dump(by_alias=True)}
+
+
+class ShippingAddressDeleteMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ShippingAddressService()
+        address_id = params.get("id")
+        email = params.get("email")
+        
+        if not address_id:
+            raise ValueError("Address ID is required")
+        if not email:
+            raise ValueError("Email is required")
+        
+        success = await service.delete(address_id, email)
+        if not success:
+            raise ValueError("Address not found or access denied")
+        
+        return {"success": True}
 

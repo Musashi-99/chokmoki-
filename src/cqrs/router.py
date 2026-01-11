@@ -7,7 +7,9 @@ from src.cqrs.queries import (
     CategoryListQuery,
     CategoryGetQuery,
     OrderListQuery,
-    OrderGetQuery
+    OrderGetQuery,
+    ShippingAddressListQuery,
+    ShippingAddressGetQuery
 )
 from src.cqrs.mutations import (
     ProductCreateMutation,
@@ -18,7 +20,10 @@ from src.cqrs.mutations import (
     CategoryDeleteMutation,
     OrderCreateMutation,
     OrderStatusUpdateMutation,
-    ContactCreateMutation
+    ContactCreateMutation,
+    ShippingAddressCreateMutation,
+    ShippingAddressUpdateMutation,
+    ShippingAddressDeleteMutation
 )
 
 
@@ -32,6 +37,8 @@ class CQRSRouter:
         "category.get": CategoryGetQuery,
         "order.list": OrderListQuery,
         "order.get": OrderGetQuery,
+        "shippingAddress.list": ShippingAddressListQuery,
+        "shippingAddress.get": ShippingAddressGetQuery,
     }
     
     MUTATIONS: Dict[str, Any] = {
@@ -44,6 +51,9 @@ class CQRSRouter:
         "order.create": OrderCreateMutation,
         "order.updateStatus": OrderStatusUpdateMutation,
         "contact.create": ContactCreateMutation,
+        "shippingAddress.create": ShippingAddressCreateMutation,
+        "shippingAddress.update": ShippingAddressUpdateMutation,
+        "shippingAddress.delete": ShippingAddressDeleteMutation,
     }
     
     @classmethod

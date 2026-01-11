@@ -3,6 +3,7 @@ from src.cqrs.base import CommandQuery
 from src.services.product_service import ProductService
 from src.services.category_service import CategoryService
 from src.services.order_service import OrderService
+from src.services.shipping_address_service import ShippingAddressService
 from src.plugins.logger import logger
 
 
@@ -128,4 +129,34 @@ class OrderGetQuery(CommandQuery):
             raise ValueError("Order not found")
         
         return {"data": order.model_dump(by_alias=True)}
+
+
+class ShippingAddressListQuery(CommandQuery):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ShippingAddressService()
+        email = params.get("email")
+        
+        if not email:
+            raise ValueError("Email is required")
+        
+        addresses = await service.get_by_email(email)
+        return {
+            "data": [address.model_dump(by_alias=True) for address in addresses],
+            "count": len(addresses)
+        }
+
+
+class ShippingAddressGetQuery(CommandQuery):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ShippingAddressService()
+        address_id = params.get("id")
+        
+        if not address_id:
+            raise ValueError("Address ID is required")
+        
+        address = await service.get_by_id(address_id)
+        if not address:
+            raise ValueError("Address not found")
+        
+        return {"data": address.model_dump(by_alias=True)}
 
