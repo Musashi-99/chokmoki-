@@ -113,4 +113,4 @@ async def health_check():
 
 from mangum import Mangum
 
-handler = Mangum(app)
+handler = Mangum(app, lifespan="off")
