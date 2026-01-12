@@ -1,6 +1,7 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
@@ -21,8 +22,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,
-        extra="ignore"
+        extra="ignore",
+        env_ignore_empty=True
     )
 
+
+# Remove old ADMIN_KEYS env var if it exists to prevent parsing errors
+if "ADMIN_KEYS" in os.environ:
+    del os.environ["ADMIN_KEYS"]
 
 settings = Settings()
