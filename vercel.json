@@ -1,18 +1,20 @@
 {
-  "functions": {
-    "api/index.py": {
-      "runtime": "python3.9"
-    }
-  },
-  "rewrites": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
     }
   ],
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/(.*)",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
