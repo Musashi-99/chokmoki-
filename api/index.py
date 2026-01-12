@@ -111,6 +111,4 @@ async def health_check():
     return {"status": "ok"}
 
 
-from mangum import Mangum
-
-handler = Mangum(app, lifespan="off")
+handler = app
