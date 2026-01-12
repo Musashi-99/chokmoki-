@@ -8,12 +8,12 @@ from datetime import datetime
 import json
 import sys
 
+# Optional imports – do NOT crash boot
 try:
     from src.database.connection import db
     from src.cqrs.router import CQRSRouter
     from src.plugins.logger import logger
 except Exception as e:
-    # Log import errors but don't crash
     print(f"Import error: {e}", file=sys.stderr)
     db = None
     CQRSRouter = None
@@ -36,7 +36,9 @@ class APIRequest(BaseModel):
     adminKey: Optional[str] = None
 
 
+# ✅ Export THIS ONLY
 app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,68 +49,36 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup_event():
-    if db is not None:
-        try:
-            await db.connect()
-            if logger:
-                logger.info("Database connected")
-        except Exception as e:
-            if logger:
-                logger.error(f"Database connection error: {str(e)}")
-            # Don't crash the app if DB connection fails - will connect lazily on first use
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    if db is not None:
-        try:
-            await db.close()
-            if logger:
-                logger.info("Database disconnected")
-        except Exception as e:
-            if logger:
-                logger.error(f"Database disconnection error: {str(e)}")
-
-
 @app.post("/")
 async def handle_request(request: APIRequest):
     if CQRSRouter is None:
-        raise HTTPException(status_code=500, detail="Server not properly initialized")
-    
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    if request.type not in {"query", "mutation"}:
+        raise HTTPException(status_code=400, detail="Invalid type")
+
     try:
-        if not request.operation:
-            raise HTTPException(status_code=400, detail="Operation is required")
-        
-        if request.type not in ["query", "mutation"]:
-            raise HTTPException(status_code=400, detail="Type must be 'query' or 'mutation'")
-        
         if request.type == "query":
-            result = await CQRSRouter.execute_query(request.operation, request.params, request.adminKey)
+            result = await CQRSRouter.execute_query(
+                request.operation, request.params, request.adminKey
+            )
         else:
-            result = await CQRSRouter.execute_mutation(request.operation, request.params, request.adminKey)
-        
+            result = await CQRSRouter.execute_mutation(
+                request.operation, request.params, request.adminKey
+            )
+
         return JSONResponse(
-            content=json.loads(json.dumps(result, cls=JSONEncoder)),
-            status_code=200
+            content=json.loads(json.dumps(result, cls=JSONEncoder))
         )
-    
-    except ValueError as e:
-        if logger:
-            logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+
     except HTTPException:
         raise
     except Exception as e:
         if logger:
-            logger.error(f"Server error: {str(e)}")
+            logger.error(str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
-
-
-handler = app
