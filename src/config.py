@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # Auth
     clerk_secret_key: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
-    admin_key: str = Field(..., env="ADMIN_KEY")
+    admin_key: str = Field(..., env="ADMIN_KEYS")
 
     # Infra
     redis_url: str = Field(..., env="REDIS_URL")
@@ -25,10 +25,5 @@ class Settings(BaseSettings):
         extra="ignore",
         env_ignore_empty=True
     )
-
-
-# Remove old ADMIN_KEYS env var if it exists to prevent parsing errors
-if "ADMIN_KEYS" in os.environ:
-    del os.environ["ADMIN_KEYS"]
 
 settings = Settings()
