@@ -6,4 +6,4 @@ fastapi==0.115.0
 uvicorn[standard]==0.32.0
 mangum==0.18.0
 pydantic[email]
-
+redis>=5.0.0

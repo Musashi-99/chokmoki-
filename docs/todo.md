@@ -1,3 +1,5 @@
 # todo
-1. in router.py add admin level authentication create a plugin that will check from config files, there is a list of admin keys, and for certain queries and mutations admin level auth is required.
-eg - product cant be created with auth, same for delete and edit, these are admin level, same for categories. but orders can be created without admin auth, but not all order will be displayed without admin auth. these are router level config so put them in router.py dont touch the existing query mutation or service layer.
+1. add all analytics things for user, like product search or other things and store them in mongo and redis, and create charts in frontend admin panel and trigger analytics events for users things, and show the data using graphs and other things in admin panel dashboard.
+2. if backend queries are needed, add them as well.
+3. do the both ui, for users track the users actions, for admin show the charts, for backend add data.
+4.store them properly and use redis and mongo and display them properly with filters in admin panel.

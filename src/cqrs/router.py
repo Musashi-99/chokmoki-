@@ -28,6 +28,19 @@ from src.resources.orders.mutations import (
     OrderCreateMutation,
     OrderStatusUpdateMutation,
 )
+from src.resources.analytics.queries import (
+    GetEventsQuery,
+    GetUniqueUsersQuery,
+    GetEventCountQuery,
+    GetRevenueQuery,
+    GetTopSearchesQuery,
+    GetTopProductsQuery,
+    GetAnalyticsOverviewQuery,
+)
+from src.resources.analytics.mutations import (
+    TrackEventMutation,
+    TrackMetricMutation,
+)
 from src.cqrs.queries import (
     ShippingAddressListQuery,
     ShippingAddressGetQuery,
@@ -58,6 +71,13 @@ class CQRSRouter:
         "shippingAddress.get": ShippingAddressGetQuery,
         "syncKey.get": SyncKeyGetQuery,
         "contact.list": ContactListQuery,
+        "analytics.events": GetEventsQuery,
+        "analytics.uniqueUsers": GetUniqueUsersQuery,
+        "analytics.eventCount": GetEventCountQuery,
+        "analytics.revenue": GetRevenueQuery,
+        "analytics.topSearches": GetTopSearchesQuery,
+        "analytics.topProducts": GetTopProductsQuery,
+        "analytics.overview": GetAnalyticsOverviewQuery,
     }
     
     MUTATIONS: Dict[str, Any] = {
@@ -73,6 +93,8 @@ class CQRSRouter:
         "shippingAddress.create": ShippingAddressCreateMutation,
         "shippingAddress.update": ShippingAddressUpdateMutation,
         "shippingAddress.delete": ShippingAddressDeleteMutation,
+        "analytics.trackEvent": TrackEventMutation,
+        "analytics.trackMetric": TrackMetricMutation,
     }
     
     ADMIN_REQUIRED_OPERATIONS = {
@@ -99,6 +121,11 @@ class CQRSRouter:
         if operation == "contact.list":
             if not admin_key or not validate_admin_key(admin_key):
                 raise ValueError("Admin authentication required to list contacts")
+        
+        # Analytics queries require admin authentication (but mutations don't)
+        if operation.startswith("analytics.") and operation not in ["analytics.trackEvent", "analytics.trackMetric"]:
+            if not admin_key or not validate_admin_key(admin_key):
+                raise ValueError("Admin authentication required for analytics operations")
     
     @classmethod
     async def execute_query(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:

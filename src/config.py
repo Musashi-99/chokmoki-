@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     clerk_secret_key: Optional[str] = Field(None, env="CLERK_SECRET_KEY")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     admin_keys: list[str] = Field(default=["abcd", "1234", "pqrst"], env="ADMIN_KEYS")
+    redis_url: str = Field(default="redis://default:@redis-11487.crce182.ap-south-1-1.ec2.cloud.redislabs.com:11487", env="REDIS_URL")
     
     class Config:
         env_file = ".env"
