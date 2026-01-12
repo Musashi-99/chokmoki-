@@ -1,6 +1,6 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, Union
 
 password_db = ""
 class Settings(BaseSettings):
@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     admin_keys: list[str] = Field(default=["abcd", "1234", "pqrst"], env="ADMIN_KEYS")
     redis_url: str = Field(default="redis://default:@redis-11487.crce182.ap-south-1-1.ec2.cloud.redislabs.com:11487", env="REDIS_URL")
+    
+    @field_validator('admin_keys', mode='before')
+    @classmethod
+    def parse_admin_keys(cls, v: Union[str, list[str]]) -> list[str]:
+        if isinstance(v, str):
+            return [key.strip() for key in v.split(',') if key.strip()]
+        return v if isinstance(v, list) else []
     
     class Config:
         env_file = ".env"
