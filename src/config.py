@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     mongodb_db_name: str = Field(default="lowkey_ecom", env="MONGODB_DB_NAME")
     clerk_secret_key: Optional[str] = Field(None, env="CLERK_SECRET_KEY")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    admin_keys: list[str] = Field(default=["abcd", "1234", "pqrst"], env="ADMIN_KEYS")
     
     class Config:
         env_file = ".env"

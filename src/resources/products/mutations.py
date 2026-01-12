@@ -1,0 +1,42 @@
+from typing import Dict, Any
+from src.cqrs.base import CommandMutation
+from src.services.product_service import ProductService
+from src.models.product import ProductCreate
+
+
+class ProductCreateMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ProductService()
+        product_data = ProductCreate(**params)
+        product = await service.create(product_data)
+        return {"data": product.model_dump(by_alias=True)}
+
+
+class ProductUpdateMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ProductService()
+        product_id = params.pop("id")
+        
+        if not product_id:
+            raise ValueError("Product ID is required")
+        
+        product = await service.update(product_id, params)
+        if not product:
+            raise ValueError("Product not found")
+        
+        return {"data": product.model_dump(by_alias=True)}
+
+
+class ProductDeleteMutation(CommandMutation):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ProductService()
+        product_id = params.get("id")
+        
+        if not product_id:
+            raise ValueError("Product ID is required")
+        
+        success = await service.delete(product_id)
+        if not success:
+            raise ValueError("Product not found")
+        
+        return {"success": True}
