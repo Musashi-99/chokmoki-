@@ -32,6 +32,7 @@ from src.cqrs.queries import (
     ShippingAddressListQuery,
     ShippingAddressGetQuery,
     SyncKeyGetQuery,
+    ContactListQuery,
 )
 from src.cqrs.mutations import (
     ContactCreateMutation,
@@ -56,6 +57,7 @@ class CQRSRouter:
         "shippingAddress.list": ShippingAddressListQuery,
         "shippingAddress.get": ShippingAddressGetQuery,
         "syncKey.get": SyncKeyGetQuery,
+        "contact.list": ContactListQuery,
     }
     
     MUTATIONS: Dict[str, Any] = {
@@ -93,6 +95,10 @@ class CQRSRouter:
             if not user_email:
                 if not admin_key or not validate_admin_key(admin_key):
                     raise ValueError("Admin authentication required to list all orders")
+        
+        if operation == "contact.list":
+            if not admin_key or not validate_admin_key(admin_key):
+                raise ValueError("Admin authentication required to list contacts")
     
     @classmethod
     async def execute_query(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:

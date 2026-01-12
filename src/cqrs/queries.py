@@ -2,6 +2,7 @@ from typing import Dict, Any
 from src.cqrs.base import CommandQuery
 from src.services.sync_key_service import SyncKeyService
 from src.services.shipping_address_service import ShippingAddressService
+from src.services.contact_service import ContactService
 
 
 class SyncKeyGetQuery(CommandQuery):
@@ -47,3 +48,18 @@ class ShippingAddressGetQuery(CommandQuery):
             raise ValueError("Address not found")
         
         return {"data": address.model_dump(by_alias=True)}
+
+
+class ContactListQuery(CommandQuery):
+    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        service = ContactService()
+        skip = params.get("skip", 0)
+        limit = params.get("take") or params.get("limit", 20)
+        
+        contacts = await service.list(skip=skip, limit=limit)
+        total = await service.count()
+        
+        return {
+            "data": [contact.model_dump(by_alias=True) for contact in contacts],
+            "count": total
+        }
