@@ -22,7 +22,7 @@
         },
         {
           "key": "Access-Control-Allow-Methods",
-          "value": "GET, POST, OPTIONS, PUT, DELETE"
+          "value": "GET, POST, OPTIONS, PUT"
         },
         {
           "key": "Access-Control-Allow-Headers",
