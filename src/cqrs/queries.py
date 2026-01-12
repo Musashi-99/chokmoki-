@@ -1,163 +1,32 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 from src.cqrs.base import CommandQuery
-from src.services.product_service import ProductService
-from src.services.category_service import CategoryService
-from src.services.order_service import OrderService
+from src.services.sync_key_service import SyncKeyService
 from src.services.shipping_address_service import ShippingAddressService
-from src.plugins.logger import logger
 
 
-class ProductListQuery(CommandQuery):
+class SyncKeyGetQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = ProductService()
-        skip = params.get("skip", 0)
-        limit = params.get("take") or params.get("limit", 20)
-        active = params.get("active")
-        category_id = params.get("category_id")
-        include_categories = params.get("include_categories", True)
+        service = SyncKeyService()
+        key_type = params.get("key", "products")
         
-        products = await service.list(skip=skip, limit=limit, active=active, category_id=category_id, include_categories=include_categories)
-        return {
-            "data": products,
-            "count": len(products)
-        }
-
-
-class ProductGetQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = ProductService()
-        product_id = params.get("id")
+        if key_type == "products":
+            sync_key = await service.get_or_create_products_sync_key()
+            return {"data": {"key": "products", "value": sync_key}}
         
-        if not product_id:
-            raise ValueError("Product ID is required")
-        
-        product = await service.get_by_id(product_id)
-        if not product:
-            raise ValueError("Product not found")
-        
-        return {"data": product.model_dump(by_alias=True)}
-
-
-class ProductSearchQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = ProductService()
-        search_term = params.get("search_term")
-        skip = params.get("skip", 0)
-        limit = params.get("take") or params.get("limit", 20)
-        include_categories = params.get("include_categories", True)
-        
-        if not search_term:
-            raise ValueError("Search term is required")
-        
-        products = await service.search(search_term, skip=skip, limit=limit, include_categories=include_categories)
-        return {
-            "data": products,
-            "count": len(products)
-        }
-
-
-class ProductGetByIdsQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = ProductService()
-        product_ids = params.get("ids", [])
-        include_categories = params.get("include_categories", True)
-        
-        if not product_ids:
-            raise ValueError("Product IDs are required")
-        
-        if not isinstance(product_ids, list):
-            raise ValueError("Product IDs must be a list")
-        
-        products = await service.get_by_ids(product_ids, include_categories=include_categories)
-        return {
-            "data": products,
-            "count": len(products)
-        }
-
-
-class CategoryListQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = CategoryService()
-        skip = params.get("skip", 0)
-        limit = params.get("take") or params.get("limit", 20)
-        
-        categories = await service.list(skip=skip, limit=limit)
-        return {
-            "data": [category.model_dump(by_alias=True) for category in categories],
-            "count": len(categories)
-        }
-
-
-class CategoryGetQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = CategoryService()
-        category_id = params.get("id")
-        
-        if not category_id:
-            raise ValueError("Category ID is required")
-        
-        category = await service.get_by_id(category_id)
-        if not category:
-            raise ValueError("Category not found")
-        
-        return {"data": category.model_dump(by_alias=True)}
-
-
-class OrderListQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = OrderService()
-        skip = params.get("skip", 0)
-        limit = params.get("limit", 20)
-        user_email = params.get("userEmail")
-        
-        orders = await service.list(skip=skip, limit=limit, user_email=user_email)
-        return {
-            "data": [order.model_dump(by_alias=True) for order in orders],
-            "count": len(orders)
-        }
-
-
-class OrderGetQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = OrderService()
-        order_id = params.get("id")
-        
-        if not order_id:
-            raise ValueError("Order ID is required")
-        
-        order = await service.get_by_id(order_id)
-        if not order:
-            raise ValueError("Order not found")
-        
-        return {"data": order.model_dump(by_alias=True)}
-
-
-class OrderLogQuery(CommandQuery):
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        service = OrderService()
-        order_id = params.get("order_id")
-        
-        if not order_id:
-            raise ValueError("order_id is required")
-        
-        log = await service.get_order_log(order_id)
-        if not log:
-            raise ValueError("Order log not found")
-        
-        return {"data": log}
+        raise ValueError(f"Unknown sync key type: {key_type}")
 
 
 class ShippingAddressListQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ShippingAddressService()
-        email = params.get("email")
+        clerk_token = params.get("clerk_token")
         
-        if not email:
-            raise ValueError("Email is required")
+        if not clerk_token:
+            raise ValueError("clerk_token is required")
         
-        addresses = await service.get_by_email(email)
+        addresses = await service.list_by_clerk_token(clerk_token)
         return {
-            "data": [address.model_dump(by_alias=True) for address in addresses],
+            "data": [addr.model_dump(by_alias=True) for addr in addresses],
             "count": len(addresses)
         }
 
@@ -166,13 +35,15 @@ class ShippingAddressGetQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ShippingAddressService()
         address_id = params.get("id")
+        clerk_token = params.get("clerk_token")
         
         if not address_id:
             raise ValueError("Address ID is required")
+        if not clerk_token:
+            raise ValueError("clerk_token is required")
         
-        address = await service.get_by_id(address_id)
+        address = await service.get_by_id(address_id, clerk_token)
         if not address:
             raise ValueError("Address not found")
         
         return {"data": address.model_dump(by_alias=True)}
-

@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from src.resources.products.queries import (
     ProductListQuery,
     ProductGetQuery,
@@ -30,7 +30,8 @@ from src.resources.orders.mutations import (
 )
 from src.cqrs.queries import (
     ShippingAddressListQuery,
-    ShippingAddressGetQuery
+    ShippingAddressGetQuery,
+    SyncKeyGetQuery,
 )
 from src.cqrs.mutations import (
     ContactCreateMutation,
@@ -38,6 +39,7 @@ from src.cqrs.mutations import (
     ShippingAddressUpdateMutation,
     ShippingAddressDeleteMutation
 )
+from src.plugins.admin_auth import validate_admin_key
 
 
 class CQRSRouter:
@@ -53,6 +55,7 @@ class CQRSRouter:
         "order.getLog": OrderLogQuery,
         "shippingAddress.list": ShippingAddressListQuery,
         "shippingAddress.get": ShippingAddressGetQuery,
+        "syncKey.get": SyncKeyGetQuery,
     }
     
     MUTATIONS: Dict[str, Any] = {
@@ -70,19 +73,44 @@ class CQRSRouter:
         "shippingAddress.delete": ShippingAddressDeleteMutation,
     }
     
+    ADMIN_REQUIRED_OPERATIONS = {
+        "product.create",
+        "product.update",
+        "product.delete",
+        "category.create",
+        "category.update",
+        "category.delete",
+    }
+    
     @classmethod
-    async def execute_query(cls, operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _check_admin_auth(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> None:
+        if operation in cls.ADMIN_REQUIRED_OPERATIONS:
+            if not admin_key or not validate_admin_key(admin_key):
+                raise ValueError("Admin authentication required for this operation")
+        
+        if operation == "order.list":
+            user_email = params.get("userEmail")
+            if not user_email:
+                if not admin_key or not validate_admin_key(admin_key):
+                    raise ValueError("Admin authentication required to list all orders")
+    
+    @classmethod
+    async def execute_query(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:
         if operation not in cls.QUERIES:
             raise ValueError(f"Unknown query operation: {operation}")
+        
+        cls._check_admin_auth(operation, params, admin_key)
         
         query_class = cls.QUERIES[operation]
         query = query_class()
         return await query.execute(params)
     
     @classmethod
-    async def execute_mutation(cls, operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_mutation(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:
         if operation not in cls.MUTATIONS:
             raise ValueError(f"Unknown mutation operation: {operation}")
+        
+        cls._check_admin_auth(operation, params, admin_key)
         
         mutation_class = cls.MUTATIONS[operation]
         mutation = mutation_class()

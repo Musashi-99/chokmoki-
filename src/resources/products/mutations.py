@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from src.cqrs.base import CommandMutation
 from src.services.product_service import ProductService
+from src.services.sync_key_service import SyncKeyService
 from src.models.product import ProductCreate
 
 
@@ -9,6 +10,10 @@ class ProductCreateMutation(CommandMutation):
         service = ProductService()
         product_data = ProductCreate(**params)
         product = await service.create(product_data)
+        
+        sync_key_service = SyncKeyService()
+        await sync_key_service.update_products_sync_key()
+        
         return {"data": product.model_dump(by_alias=True)}
 
 
@@ -24,6 +29,9 @@ class ProductUpdateMutation(CommandMutation):
         if not product:
             raise ValueError("Product not found")
         
+        sync_key_service = SyncKeyService()
+        await sync_key_service.update_products_sync_key()
+        
         return {"data": product.model_dump(by_alias=True)}
 
 
@@ -38,5 +46,8 @@ class ProductDeleteMutation(CommandMutation):
         success = await service.delete(product_id)
         if not success:
             raise ValueError("Product not found")
+        
+        sync_key_service = SyncKeyService()
+        await sync_key_service.update_products_sync_key()
         
         return {"success": True}

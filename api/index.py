@@ -24,6 +24,7 @@ class APIRequest(BaseModel):
     type: str
     operation: str
     params: Dict[str, Any] = {}
+    adminKey: Optional[str] = None
 
 
 app = FastAPI()
@@ -65,9 +66,9 @@ async def handle_request(request: APIRequest):
             raise HTTPException(status_code=400, detail="Type must be 'query' or 'mutation'")
         
         if request.type == "query":
-            result = await CQRSRouter.execute_query(request.operation, request.params)
+            result = await CQRSRouter.execute_query(request.operation, request.params, request.adminKey)
         else:
-            result = await CQRSRouter.execute_mutation(request.operation, request.params)
+            result = await CQRSRouter.execute_mutation(request.operation, request.params, request.adminKey)
         
         return JSONResponse(
             content=json.loads(json.dumps(result, cls=JSONEncoder)),

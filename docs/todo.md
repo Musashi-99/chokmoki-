@@ -1,3 +1,3 @@
 # todo
-1. i am not happy with the current mutations and queries in one folder, create a folder named resource, for each resource products, orders, and categories, create separate file and put the query and handlers over there.
-eg - resources/products -> queries.py mutations.py put them here then register them in cqrs/router.py
+1. in router.py add admin level authentication create a plugin that will check from config files, there is a list of admin keys, and for certain queries and mutations admin level auth is required.
+eg - product cant be created with auth, same for delete and edit, these are admin level, same for categories. but orders can be created without admin auth, but not all order will be displayed without admin auth. these are router level config so put them in router.py dont touch the existing query mutation or service layer.
