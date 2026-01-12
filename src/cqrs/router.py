@@ -1,26 +1,38 @@
 from typing import Dict, Any
-from src.cqrs.queries import (
+from src.resources.products.queries import (
     ProductListQuery,
     ProductGetQuery,
     ProductSearchQuery,
     ProductGetByIdsQuery,
+)
+from src.resources.products.mutations import (
+    ProductCreateMutation,
+    ProductUpdateMutation,
+    ProductDeleteMutation,
+)
+from src.resources.categories.queries import (
     CategoryListQuery,
     CategoryGetQuery,
+)
+from src.resources.categories.mutations import (
+    CategoryCreateMutation,
+    CategoryUpdateMutation,
+    CategoryDeleteMutation,
+)
+from src.resources.orders.queries import (
     OrderListQuery,
     OrderGetQuery,
     OrderLogQuery,
+)
+from src.resources.orders.mutations import (
+    OrderCreateMutation,
+    OrderStatusUpdateMutation,
+)
+from src.cqrs.queries import (
     ShippingAddressListQuery,
     ShippingAddressGetQuery
 )
 from src.cqrs.mutations import (
-    ProductCreateMutation,
-    ProductUpdateMutation,
-    ProductDeleteMutation,
-    CategoryCreateMutation,
-    CategoryUpdateMutation,
-    CategoryDeleteMutation,
-    OrderCreateMutation,
-    OrderStatusUpdateMutation,
     ContactCreateMutation,
     ShippingAddressCreateMutation,
     ShippingAddressUpdateMutation,
