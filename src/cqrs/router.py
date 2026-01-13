@@ -26,6 +26,8 @@ from src.resources.orders.queries import (
 )
 from src.resources.orders.mutations import (
     OrderCreateMutation,
+    OrderInitiateMutation,
+    OrderVerifyPaymentMutation,
     OrderStatusUpdateMutation,
 )
 from src.resources.analytics.queries import (
@@ -88,6 +90,8 @@ class CQRSRouter:
         "category.update": CategoryUpdateMutation,
         "category.delete": CategoryDeleteMutation,
         "order.create": OrderCreateMutation,
+        "order.initiate": OrderInitiateMutation,
+        "order.verifyPayment": OrderVerifyPaymentMutation,
         "order.updateStatus": OrderStatusUpdateMutation,
         "contact.create": ContactCreateMutation,
         "shippingAddress.create": ShippingAddressCreateMutation,

@@ -7,3 +7,4 @@ uvicorn[standard]==0.32.0
 mangum==0.18.0
 pydantic[email]
 redis>=5.0.0
+razorpay>=1.4.0

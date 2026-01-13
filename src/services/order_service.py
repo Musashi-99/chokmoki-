@@ -2,10 +2,14 @@ from typing import List, Optional, Dict, Any
 from bson import ObjectId
 from datetime import datetime
 import uuid
+import json
 from src.database.connection import db
+from src.database.redis_connection import redis_client
 from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus
 from src.models.product import Product
 from src.services.product_service import ProductService
+from src.services.razorpay_service import RazorpayService
+from src.config import settings
 from src.plugins.logger import logger
 
 
@@ -66,72 +70,41 @@ class OrderService:
         }
     
     async def create(self, order_data: OrderCreateInput) -> Order:
-        """Create order with validation and recalculation"""
+        """Create order with validation and recalculation (for COD)"""
+        if order_data.paymentMethod == "razorpay":
+            raise ValueError("Use initiate_order for razorpay payments")
+        
+        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        
         database = await db.get_database()
         orders_collection = database[self.COLLECTION_NAME]
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
         
-        # Store raw order data for debugging
         raw_order_log = order_data.model_dump()
         order_id = str(uuid.uuid4())
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
         
-        # Validate and process each item
-        product_service = ProductService()
-        validated_items: List[ValidatedOrderItem] = []
-        
-        for item in order_data.items:
-            # Fetch product from database
-            product = await product_service.get_by_id(item.productId)
-            if not product:
-                raise ValueError(f"Product {item.productId} not found")
-            
-            if not product.active:
-                raise ValueError(f"Product {item.productId} is not active")
-            
-            # Validate variant
-            if not self._validate_variant(product, item.variant):
-                raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
-            
-            # Recalculate pricing from product data (never trust user data)
-            unit_price = product.selling_price
-            total_price = unit_price * item.quantity
-            
-            validated_item = ValidatedOrderItem(
-                product_id=item.productId,
-                product_name=product.name,
-                variant=item.variant,
-                quantity=item.quantity,
-                unit_price=unit_price,
-                total_price=total_price
-            )
-            validated_items.append(validated_item)
-        
-        # Recalculate all pricing
-        recalculated_pricing = self._recalculate_pricing(validated_items)
-        
-        # Create order document
         order_dict = {
             "order_id": order_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],
             "special_message": order_data.specialMessage or "",
-            "subtotal": recalculated_pricing["subtotal"],
-            "discount": recalculated_pricing["discount"],
-            "shipping": recalculated_pricing["shipping"],
-            "total_amount": recalculated_pricing["total"],
+            "subtotal": pricing["subtotal"],
+            "discount": pricing["discount"],
+            "shipping": pricing["shipping"],
+            "total_amount": pricing["total"],
+            "payment_method": order_data.paymentMethod or "cod",
+            "payment_status": "completed" if order_data.paymentMethod == "cod" else None,
             "status": OrderStatus(type="accepted").model_dump(),
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log
         }
         
-        # Insert order
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
         
-        # Store raw log separately for debugging
         await logs_collection.insert_one({
             "order_id": order_id,
             "raw_data": raw_order_log,
@@ -139,8 +112,6 @@ class OrderService:
         })
         
         logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
-        logger.info(f"Order total recalculated: {recalculated_pricing['total']} (user sent: {order_data.pricing.total})")
-        
         return Order(**order_dict)
     
     async def get_by_id(self, order_id: str) -> Optional[Order]:
@@ -202,3 +173,126 @@ class OrderService:
         if result.modified_count > 0:
             return await self.get_by_id(order_id)
         return None
+    
+    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], Dict[str, float]]:
+        """Validate order items and recalculate pricing - shared logic"""
+        product_service = ProductService()
+        validated_items: List[ValidatedOrderItem] = []
+        
+        for item in order_data.items:
+            product = await product_service.get_by_id(item.productId)
+            if not product:
+                raise ValueError(f"Product {item.productId} not found")
+            if not product.active:
+                raise ValueError(f"Product {item.productId} is not active")
+            if not self._validate_variant(product, item.variant):
+                raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
+            
+            unit_price = product.selling_price
+            total_price = unit_price * item.quantity
+            
+            validated_items.append(ValidatedOrderItem(
+                product_id=item.productId,
+                product_name=product.name,
+                variant=item.variant,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                total_price=total_price
+            ))
+        
+        pricing = self._recalculate_pricing(validated_items)
+        return validated_items, pricing
+    
+    async def initiate_order(self, order_data: OrderCreateInput) -> Dict[str, Any]:
+        """Initiate order: validate, store in Redis, create Razorpay order"""
+        if order_data.paymentMethod != "razorpay":
+            raise ValueError("initiate_order only supports razorpay payment method")
+        
+        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        
+        order_id = str(uuid.uuid4())
+        raw_order_log = order_data.model_dump()
+        raw_order_log["order_id"] = order_id
+        raw_order_log["received_at"] = datetime.utcnow().isoformat()
+        
+        order_dict = {
+            "order_id": order_id,
+            "user_email": order_data.userEmail,
+            "shipping_address": order_data.shippingAddress.model_dump(),
+            "items": [item.model_dump() for item in validated_items],
+            "special_message": order_data.specialMessage or "",
+            "subtotal": pricing["subtotal"],
+            "discount": pricing["discount"],
+            "shipping": pricing["shipping"],
+            "total_amount": pricing["total"],
+            "payment_method": "razorpay",
+            "payment_status": "pending",
+            "status": OrderStatus(type="accepted").model_dump(),
+            "created_at": datetime.utcnow().isoformat(),
+            "raw_order_log": raw_order_log
+        }
+        
+        redis = await redis_client.get_client()
+        redis_key = f"pending_order:{order_id}"
+        await redis.setex(redis_key, 3600, json.dumps(order_dict, default=str))
+        
+        razorpay_service = RazorpayService()
+        razorpay_order = razorpay_service.create_order(
+            amount=pricing["total"],
+            notes={"order_id": order_id, "user_email": order_data.userEmail}
+        )
+        
+        logger.info(f"Order initiated: {order_id}, Razorpay order: {razorpay_order['id']}")
+        
+        return {
+            "order_id": order_id,
+            "razorpay_order_id": razorpay_order["id"],
+            "razorpay_key_id": settings.razorpay_key_id,
+            "amount": pricing["total"]
+        }
+    
+    async def verify_payment(
+        self,
+        order_id: str,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+        razorpay_signature: str
+    ) -> Order:
+        """Verify payment signature and move order from Redis to MongoDB"""
+        razorpay_service = RazorpayService()
+        
+        if not razorpay_service.verify_payment_signature(
+            razorpay_order_id, razorpay_payment_id, razorpay_signature
+        ):
+            raise ValueError("Invalid payment signature")
+        
+        redis = await redis_client.get_client()
+        redis_key = f"pending_order:{order_id}"
+        order_json = await redis.get(redis_key)
+        
+        if not order_json:
+            raise ValueError(f"Order {order_id} not found in Redis")
+        
+        order_dict = json.loads(order_json)
+        order_dict["payment_status"] = "completed"
+        order_dict["razorpay_order_id"] = razorpay_order_id
+        order_dict["razorpay_payment_id"] = razorpay_payment_id
+        order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
+        
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+        
+        result = await orders_collection.insert_one(order_dict)
+        order_dict["_id"] = result.inserted_id
+        
+        await logs_collection.insert_one({
+            "order_id": order_id,
+            "raw_data": order_dict.get("raw_order_log", {}),
+            "created_at": datetime.utcnow()
+        })
+        
+        await redis.delete(redis_key)
+        
+        logger.info(f"Payment verified and order created: {order_id}")
+        return Order(**order_dict)

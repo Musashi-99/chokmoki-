@@ -44,6 +44,7 @@ class OrderCreateInput(BaseModel):
     pricing: OrderPricingInput
     userEmail: str
     timestamp: str
+    paymentMethod: Optional[Literal["razorpay", "cod"]] = "cod"
 
 
 class ValidatedOrderItem(BaseModel):
@@ -81,6 +82,10 @@ class Order(BaseModel):
     discount: float
     shipping: float
     total_amount: float
+    payment_method: Optional[Literal["razorpay", "cod"]] = "cod"
+    payment_status: Optional[Literal["pending", "completed", "failed"]] = None
+    razorpay_order_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
     status: OrderStatus = Field(default_factory=lambda: OrderStatus(type="accepted"))
     created_at: datetime = Field(default_factory=datetime.utcnow)
     raw_order_log: Dict[str, Any]

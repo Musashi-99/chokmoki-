@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -16,6 +16,8 @@ try:
     from src.database.connection import db
     from src.database.redis_connection import redis_client
     from src.cqrs.router import CQRSRouter
+    from src.services.razorpay_service import RazorpayService
+    from src.services.order_service import OrderService
     from src.plugins.logger import logger
     from src.config import settings
 except Exception as e:
@@ -23,6 +25,8 @@ except Exception as e:
     db = None
     redis_client = None
     CQRSRouter = None
+    RazorpayService = None
+    OrderService = None
     logger = None
     settings = None
 
@@ -84,6 +88,85 @@ async def handle_request(request: APIRequest):
         if logger:
             logger.error(str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/webhook/razorpay")
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: Optional[str] = Header(None, alias="X-Razorpay-Signature")
+):
+    """Razorpay webhook endpoint with HMAC verification"""
+    if RazorpayService is None or OrderService is None:
+        raise HTTPException(status_code=500, detail="Services not initialized")
+    
+    try:
+        body = await request.body()
+        payload = body.decode('utf-8')
+        
+        if not x_razorpay_signature:
+            raise HTTPException(status_code=400, detail="Missing X-Razorpay-Signature header")
+        
+        razorpay_service = RazorpayService()
+        if not razorpay_service.verify_webhook_signature(payload, x_razorpay_signature):
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+        
+        webhook_data = json.loads(payload)
+        event = webhook_data.get("event")
+        payload_data = webhook_data.get("payload", {})
+        
+        if event == "payment.captured":
+            payment_entity = payload_data.get("payment", {}).get("entity", {})
+            order_entity = payload_data.get("order", {}).get("entity", {})
+            
+            razorpay_payment_id = payment_entity.get("id")
+            razorpay_order_id = order_entity.get("id")
+            order_id = order_entity.get("notes", {}).get("order_id")
+            
+            if not all([order_id, razorpay_order_id, razorpay_payment_id]):
+                logger.warning(f"Incomplete webhook data: {webhook_data}")
+                return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
+            
+            order_service = OrderService()
+            redis = await redis_client.get_client()
+            redis_key = f"pending_order:{order_id}"
+            
+            order_json = await redis.get(redis_key)
+            if not order_json:
+                logger.warning(f"Order {order_id} not found in Redis, may already be processed")
+                return JSONResponse(content={"status": "ignored", "reason": "order_not_found"})
+            
+            order_dict = json.loads(order_json)
+            order_dict["payment_status"] = "completed"
+            order_dict["razorpay_order_id"] = razorpay_order_id
+            order_dict["razorpay_payment_id"] = razorpay_payment_id
+            order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
+            
+            database = await db.get_database()
+            orders_collection = database[order_service.COLLECTION_NAME]
+            logs_collection = database[order_service.ORDER_LOGS_COLLECTION]
+            
+            result = await orders_collection.insert_one(order_dict)
+            order_dict["_id"] = result.inserted_id
+            
+            await logs_collection.insert_one({
+                "order_id": order_id,
+                "raw_data": order_dict.get("raw_order_log", {}),
+                "created_at": datetime.utcnow()
+            })
+            
+            await redis.delete(redis_key)
+            
+            logger.info(f"Webhook processed: Order {order_id} moved from Redis to MongoDB")
+            return JSONResponse(content={"status": "success", "order_id": order_id})
+        
+        logger.info(f"Webhook event {event} received but not processed")
+        return JSONResponse(content={"status": "ignored", "event": event})
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        if logger:
+            logger.error(f"Webhook processing error: {e}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
 @app.get("/health")

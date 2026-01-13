@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
 
+    # Razorpay
+    razorpay_key_id: str = Field(..., env="RAZORPAY_KEY_ID")
+    razorpay_key_secret: str = Field(..., env="RAZORPAY_KEY_SECRET")
+
+
     @field_validator("admin_key", mode="before")
     @classmethod
     def validate_admin_key(cls, v):
