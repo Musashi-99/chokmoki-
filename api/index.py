@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
+from contextlib import asynccontextmanager
 from bson import ObjectId
 from datetime import datetime
 import json
@@ -51,22 +52,9 @@ class APIRequest(BaseModel):
     adminKey: Optional[str] = None
 
 
-# ✅ Export THIS ONLY
-app = FastAPI()
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and Redis connections on startup"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage database and Redis connections lifecycle"""
     try:
         if db:
             await db.connect()
@@ -76,11 +64,9 @@ async def startup_event():
         if logger:
             logger.error(f"Startup connection error: {e}")
         print(f"Startup connection error: {e}", file=sys.stderr)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Close database and Redis connections on shutdown"""
+    
+    yield
+    
     try:
         if db:
             await db.close()
@@ -90,6 +76,19 @@ async def shutdown_event():
         if logger:
             logger.error(f"Shutdown connection error: {e}")
         print(f"Shutdown connection error: {e}", file=sys.stderr)
+
+
+# ✅ Export THIS ONLY
+app = FastAPI(lifespan=lifespan)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/")

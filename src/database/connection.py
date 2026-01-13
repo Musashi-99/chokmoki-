@@ -15,9 +15,9 @@ class MongoSingleton:
     
     async def connect(self):
         if self._client is None:
-            max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "10"))
-            min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "1"))
-            max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "45000"))
+            max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "5"))
+            min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "0"))
+            max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "10000"))
             
             self._client = AsyncIOMotorClient(
                 settings.mongodb_uri,
@@ -25,9 +25,10 @@ class MongoSingleton:
                 minPoolSize=min_pool_size,
                 maxIdleTimeMS=max_idle_time_ms,
                 serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=10000,
-                socketTimeoutMS=20000,
+                connectTimeoutMS=5000,
+                socketTimeoutMS=15000,
             )
+            await self._client.admin.command("ping")
         return self._client
     
     async def get_database(self):

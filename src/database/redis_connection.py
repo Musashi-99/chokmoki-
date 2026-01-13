@@ -16,9 +16,9 @@ class RedisSingleton:
     
     async def connect(self):
         if self._client is None:
-            max_connections = int(os.getenv("REDIS_MAX_CONNECTIONS", "10"))
-            socket_connect_timeout = int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5"))
-            socket_timeout = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
+            max_connections = int(os.getenv("REDIS_MAX_CONNECTIONS", "2"))
+            socket_connect_timeout = int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "3"))
+            socket_timeout = int(os.getenv("REDIS_SOCKET_TIMEOUT", "3"))
             retry_on_timeout = os.getenv("REDIS_RETRY_ON_TIMEOUT", "true").lower() == "true"
             
             self._connection_pool = redis.ConnectionPool.from_url(
@@ -31,6 +31,7 @@ class RedisSingleton:
             )
             
             self._client = redis.Redis(connection_pool=self._connection_pool)
+            await self._client.ping()
         return self._client
     
     async def get_client(self):
