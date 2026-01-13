@@ -43,6 +43,14 @@ from src.resources.analytics.mutations import (
     TrackEventMutation,
     TrackMetricMutation,
 )
+from src.resources.ratings.queries import (
+    RatingListQuery,
+    RatingSummaryQuery,
+    RatingCanRateQuery,
+)
+from src.resources.ratings.mutations import (
+    RatingCreateMutation,
+)
 from src.cqrs.queries import (
     ShippingAddressListQuery,
     ShippingAddressGetQuery,
@@ -80,6 +88,9 @@ class CQRSRouter:
         "analytics.topSearches": GetTopSearchesQuery,
         "analytics.topProducts": GetTopProductsQuery,
         "analytics.overview": GetAnalyticsOverviewQuery,
+        "rating.list": RatingListQuery,
+        "rating.summary": RatingSummaryQuery,
+        "rating.canRate": RatingCanRateQuery,
     }
     
     MUTATIONS: Dict[str, Any] = {
@@ -99,6 +110,7 @@ class CQRSRouter:
         "shippingAddress.delete": ShippingAddressDeleteMutation,
         "analytics.trackEvent": TrackEventMutation,
         "analytics.trackMetric": TrackMetricMutation,
+        "rating.create": RatingCreateMutation,
     }
     
     ADMIN_REQUIRED_OPERATIONS = {
