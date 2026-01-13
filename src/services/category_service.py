@@ -37,6 +37,12 @@ class CategoryService:
         
         return [Category(**category) for category in categories]
     
+    async def count(self) -> int:
+        """Count total categories"""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        return await collection.count_documents({})
+    
     async def update(self, category_id: str, update_data: dict) -> Optional[Category]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]

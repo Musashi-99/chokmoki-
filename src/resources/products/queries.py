@@ -13,9 +13,10 @@ class ProductListQuery(CommandQuery):
         include_categories = params.get("include_categories", True)
         
         products = await service.list(skip=skip, limit=limit, active=active, category_id=category_id, include_categories=include_categories)
+        total = await service.count(active=active, category_id=category_id)
         return {
             "data": products,
-            "count": len(products)
+            "count": total
         }
 
 
@@ -46,9 +47,10 @@ class ProductSearchQuery(CommandQuery):
             raise ValueError("Search term is required")
         
         products = await service.search(search_term, skip=skip, limit=limit, include_categories=include_categories)
+        total = await service.search_count(search_term)
         return {
             "data": products,
-            "count": len(products)
+            "count": total
         }
 
 

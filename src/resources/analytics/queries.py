@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional, Tuple
 from src.cqrs.base import CommandQuery
 from src.services.analytics_service import AnalyticsService
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 class AnalyticsQueryMixin:
@@ -11,7 +11,10 @@ class AnalyticsQueryMixin:
         if not date_str:
             return None
         try:
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except:
             return None
     
@@ -21,7 +24,7 @@ class AnalyticsQueryMixin:
         
         # Default to last 24h if no dates provided
         if not start_date and not end_date:
-            end_date = datetime.utcnow()
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=1)
         
         return start_date, end_date

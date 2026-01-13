@@ -11,9 +11,10 @@ class OrderListQuery(CommandQuery):
         user_email = params.get("userEmail")
         
         orders = await service.list(skip=skip, limit=limit, user_email=user_email)
+        total = await service.count(user_email=user_email)
         return {
             "data": [order.model_dump(by_alias=True) for order in orders],
-            "count": len(orders)
+            "count": total
         }
 
 

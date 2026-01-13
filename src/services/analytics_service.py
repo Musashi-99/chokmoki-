@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from src.database.connection import db
 from src.database.redis_connection import redis_client
@@ -31,10 +31,13 @@ class AnalyticsService:
         # Prepare event
         event_dict = event_data.model_dump()
         if not event_dict.get("timestamp"):
-            event_dict["timestamp"] = datetime.utcnow()
+            event_dict["timestamp"] = datetime.now(timezone.utc)
         else:
             if isinstance(event_dict["timestamp"], str):
-                event_dict["timestamp"] = datetime.fromisoformat(event_dict["timestamp"])
+                dt = datetime.fromisoformat(event_dict["timestamp"].replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                event_dict["timestamp"] = dt
         
         # Store in MongoDB (persistent)
         result = await collection.insert_one(event_dict)
@@ -58,7 +61,9 @@ class AnalyticsService:
     async def _update_redis_metrics(self, event_data: AnalyticsEventCreate):
         """Update Redis metrics (HLL, counters, sets) for real-time analytics"""
         redis = await redis_client.get_client()
-        timestamp = event_data.timestamp or datetime.utcnow()
+        timestamp = event_data.timestamp or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
         date_str = timestamp.strftime("%Y-%m-%d")
         hour_str = timestamp.strftime("%Y-%m-%d-%H")
         
@@ -118,7 +123,7 @@ class AnalyticsService:
         
         metric_dict = metric_data.model_dump()
         if not metric_dict.get("timestamp"):
-            metric_dict["timestamp"] = datetime.utcnow()
+            metric_dict["timestamp"] = datetime.now(timezone.utc)
         
         # Store in MongoDB
         result = await collection.insert_one(metric_dict)
@@ -145,7 +150,11 @@ class AnalyticsService:
         skip: int = 0
     ) -> List[AnalyticsEvent]:
         """Get events - checks Redis first (24h), then MongoDB (historical)"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        if start_date and start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date and end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
         is_recent = start_date and (now - start_date).total_seconds() < self.REDIS_TTL_24H
         
         events = []
@@ -187,7 +196,11 @@ class AnalyticsService:
         end_date: Optional[datetime] = None
     ) -> int:
         """Get unique users count - uses Redis HLL for recent, MongoDB for historical"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        if start_date and start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date and end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
         
         # Use Redis HLL for last 24h
         if not start_date or (now - start_date).total_seconds() < self.REDIS_TTL_24H:
@@ -230,7 +243,11 @@ class AnalyticsService:
         end_date: Optional[datetime] = None
     ) -> int:
         """Get event count - uses Redis counter for recent, MongoDB for historical"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        if start_date and start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date and end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
         
         # Use Redis counter for last 24h
         if not start_date or (now - start_date).total_seconds() < self.REDIS_TTL_24H:
@@ -265,7 +282,11 @@ class AnalyticsService:
         end_date: Optional[datetime] = None
     ) -> float:
         """Get total revenue - uses Redis for recent, MongoDB for historical"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        if start_date and start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date and end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
         
         # Use Redis for last 24h
         if not start_date or (now - start_date).total_seconds() < self.REDIS_TTL_24H:

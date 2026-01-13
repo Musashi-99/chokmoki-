@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # Auth
     clerk_secret_key: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
-    admin_key: str = Field(default="", env="ADMIN_KEYS")
+    admin_key: str = Field(env="ADMIN_KEYS")
 
     # Infra
     redis_url: str = Field(..., env="REDIS_URL")

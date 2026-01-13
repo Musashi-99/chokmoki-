@@ -148,6 +148,17 @@ class OrderService:
         
         return [Order(**order) for order in orders]
     
+    async def count(self, user_email: Optional[str] = None) -> int:
+        """Count orders matching the given filters"""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        query = {}
+        if user_email:
+            query["user_email"] = user_email
+        
+        return await collection.count_documents(query)
+    
     async def get_order_log(self, order_id: str) -> Optional[Dict[str, Any]]:
         """Get raw order log for debugging"""
         database = await db.get_database()

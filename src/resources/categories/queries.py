@@ -10,9 +10,10 @@ class CategoryListQuery(CommandQuery):
         limit = params.get("take") or params.get("limit", 20)
         
         categories = await service.list(skip=skip, limit=limit)
+        total = await service.count()
         return {
             "data": [category.model_dump(by_alias=True) for category in categories],
-            "count": len(categories)
+            "count": total
         }
 
 

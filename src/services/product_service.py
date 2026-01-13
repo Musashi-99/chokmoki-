@@ -113,6 +113,39 @@ class ProductService:
         
         return result
     
+    async def count(
+        self,
+        active: Optional[bool] = None,
+        category_id: Optional[str] = None
+    ) -> int:
+        """Count products matching the given filters"""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        query: Dict[str, Any] = {}
+        if active is not None:
+            query["active"] = active
+        if category_id:
+            query["categories"] = ObjectId(category_id)
+        
+        return await collection.count_documents(query)
+    
+    async def search_count(self, search_term: str) -> int:
+        """Count products matching the search term"""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        query = {
+            "$or": [
+                {"name": {"$regex": search_term, "$options": "i"}},
+                {"brand": {"$regex": search_term, "$options": "i"}},
+                {"tags": {"$in": [search_term]}},
+                {"product_description": {"$regex": search_term, "$options": "i"}}
+            ]
+        }
+        
+        return await collection.count_documents(query)
+    
     async def update(self, product_id: str, update_data: Dict[str, Any]) -> Optional[Product]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
