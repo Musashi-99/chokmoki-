@@ -2,7 +2,9 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import os
+from dotenv import load_dotenv
 
+load_dotenv(override=False)
 
 class Settings(BaseSettings):
     # Mongo
@@ -11,7 +13,7 @@ class Settings(BaseSettings):
 
     # Auth
     clerk_secret_key: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
-    admin_key: str = Field(env="ADMIN_KEYS")
+    admin_key: str = Field(default="", env="ADMIN_KEYS")
 
     # Infra
     redis_url: str = Field(..., env="REDIS_URL")
@@ -25,11 +27,14 @@ class Settings(BaseSettings):
     razorpay_webhook_secret: Optional[str] = Field(default=None, env="RAZORPAY_WEBHOOK_SECRET")
 
 
-    @field_validator("admin_key", mode="before")
+    @field_validator("admin_key", mode="after")
     @classmethod
     def validate_admin_key(cls, v):
         if v is None or v == "":
-            return os.getenv("ADMIN_KEYS", "")
+            env_value = os.getenv("ADMIN_KEYS", "")
+            if not env_value:
+                raise ValueError("ADMIN_KEYS environment variable is required. Please set it in your .env file.")
+            return env_value
         return v
 
     model_config = SettingsConfigDict(
