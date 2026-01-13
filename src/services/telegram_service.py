@@ -1,15 +1,14 @@
-from typing import List, Optional, Dict
+from typing import Optional, List
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Bot
 from telegram.error import TelegramError
 from src.config import settings
 from src.database.redis_connection import redis_client
 from src.plugins.logger import logger
 from src.models.telegram import (
-    OrderSnapshotDTO,
-    AggregatedOrdersDTO,
-    ProductAggregateDTO,
+    AggregatedStatsDTO,
+    LastOrderedItemDTO,
     NotificationResultDTO
 )
 
@@ -25,132 +24,96 @@ class TelegramService:
         return True
     
     async def push_order_to_queue(self, order_data: dict) -> None:
-        """Push minimal order snapshot to Redis queue (non-blocking)"""
+        """Update aggregated stats in Redis (non-blocking)"""
         if not self.is_enabled():
             return
         
         try:
             redis = await redis_client.get_client()
             
-            # Extract minimal order info for each item
-            order_id = order_data.get("order_id")
-            items = order_data.get("items", [])
-            created_at = order_data.get("created_at")
-            
-            if isinstance(created_at, datetime):
-                created_at = created_at.isoformat()
-            elif isinstance(created_at, str):
-                pass
+            # Get current stats or create new
+            stats_json = await redis.get(settings.telegram_redis_key)
+            if stats_json:
+                stats = AggregatedStatsDTO.model_validate_json(stats_json)
             else:
-                created_at = datetime.utcnow().isoformat()
+                stats = AggregatedStatsDTO()
             
-            # Push each item as separate entry for better aggregation
+            # Update stats with new order
+            items = order_data.get("items", [])
+            total_amount = order_data.get("total_amount", 0.0)
+            
+            stats.total_orders += 1
+            stats.total_price += total_amount
+            
+            # Add items to total_items and update last_ordered_items
             for item in items:
-                snapshot = OrderSnapshotDTO(
-                    order_id=order_id,
-                    product_id=item.get("product_id", ""),
-                    product_name=item.get("product_name", ""),
-                    quantity=item.get("quantity", 1),
-                    price=item.get("unit_price", 0.0),
-                    total=item.get("total_price", 0.0),
-                    currency="INR",
-                    created_at=created_at
-                )
+                item_quantity = item.get("quantity", 1)
+                item_name = item.get("product_name", "")
+                stats.total_items += item_quantity
                 
-                await redis.lpush(settings.telegram_redis_key, snapshot.model_dump_json())
+                # Add to last_ordered_items (keep only last 3)
+                last_item = LastOrderedItemDTO(name=item_name, quantity=item_quantity)
+                stats.last_ordered_items.insert(0, last_item)
+                if len(stats.last_ordered_items) > 3:
+                    stats.last_ordered_items = stats.last_ordered_items[:3]
+            
+            # Store updated stats with 24-hour expiration
+            await redis.setex(
+                settings.telegram_redis_key,
+                86400,  # 24 hours in seconds
+                stats.model_dump_json()
+            )
             
         except Exception as e:
             # Silently fail - don't affect order processing
             if logger:
-                logger.warning(f"Failed to push order to Telegram queue: {e}")
+                logger.warning(f"Failed to update Telegram stats: {e}")
     
-    async def get_pending_orders(self) -> List[OrderSnapshotDTO]:
-        """Get all pending orders from Redis"""
+    async def get_aggregated_stats(self) -> Optional[AggregatedStatsDTO]:
+        """Get aggregated stats from Redis"""
         if not self.is_enabled():
-            return []
+            return None
         
         try:
             redis = await redis_client.get_client()
-            orders_json = await redis.lrange(settings.telegram_redis_key, 0, -1)
+            stats_json = await redis.get(settings.telegram_redis_key)
             
-            orders = []
-            for order_json in orders_json:
-                try:
-                    orders.append(OrderSnapshotDTO.model_validate_json(order_json))
-                except (json.JSONDecodeError, ValueError):
-                    continue
-            
-            return orders
+            if stats_json:
+                return AggregatedStatsDTO.model_validate_json(stats_json)
+            return None
         except Exception as e:
             if logger:
-                logger.error(f"Failed to get pending orders from Redis: {e}")
-            return []
+                logger.error(f"Failed to get aggregated stats from Redis: {e}")
+            return None
     
-    async def clear_pending_orders(self) -> None:
-        """Clear all pending orders from Redis"""
+    async def clear_aggregated_stats(self) -> None:
+        """Clear aggregated stats from Redis"""
         try:
             redis = await redis_client.get_client()
             await redis.delete(settings.telegram_redis_key)
         except Exception as e:
             if logger:
-                logger.error(f"Failed to clear pending orders: {e}")
+                logger.error(f"Failed to clear aggregated stats: {e}")
     
-    def _aggregate_orders(self, orders: List[OrderSnapshotDTO]) -> AggregatedOrdersDTO:
-        """Aggregate orders into summary"""
-        if not orders:
-            return AggregatedOrdersDTO()
-        
-        # Get unique order IDs
-        unique_order_ids = set(order.order_id for order in orders)
-        total_orders = len(unique_order_ids)
-        
-        # Calculate total revenue
-        total_revenue = sum(order.total for order in orders)
-        
-        # Aggregate products
-        products: Dict[str, ProductAggregateDTO] = {}
-        for order in orders:
-            if order.product_id not in products:
-                products[order.product_id] = ProductAggregateDTO(
-                    name=order.product_name,
-                    quantity=0,
-                    total_revenue=0.0
-                )
-            
-            products[order.product_id].quantity += order.quantity
-            products[order.product_id].total_revenue += order.total
-        
-        return AggregatedOrdersDTO(
-            total_orders=total_orders,
-            total_revenue=total_revenue,
-            products=products
-        )
-    
-    def _format_message(self, aggregated: AggregatedOrdersDTO, time_window: Optional[str] = None) -> str:
-        """Format aggregated data into Telegram message"""
+    def _format_message(self, stats: AggregatedStatsDTO) -> str:
+        """Format aggregated stats into Telegram message"""
         # Header
-        message = "🛒 New Orders Summary (Last 1 Hour)\n\n"
-        message += f"📦 Total Orders: {aggregated.total_orders}\n"
-        message += f"💰 Total Revenue: ₹{aggregated.total_revenue:,.0f}\n\n"
+        message = "🛒 Orders Summary\n\n"
+        message += f"📦 Total Orders: {stats.total_orders}\n"
+        message += f"📊 Total Items: {stats.total_items}\n"
+        message += f"💰 Total Revenue: ₹{stats.total_price:,.0f}\n\n"
         
-        # Products section
-        if aggregated.products:
-            message += "Products Ordered:\n\n"
+        # Last ordered items section
+        if stats.last_ordered_items:
+            message += "Last Ordered Items:\n\n"
             
-            for idx, (product_id, product_data) in enumerate(aggregated.products.items(), 1):
-                emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][(idx - 1) % 10]
-                product_url = f"{settings.telegram_product_base_url}/{product_id}"
-                
-                message += f"{emoji} {product_data.name} (x{product_data.quantity})\n"
-                message += f"🔗 {product_url}\n"
-                message += f"💵 ₹{product_data.total_revenue:,.0f}\n\n"
+            for idx, item in enumerate(stats.last_ordered_items, 1):
+                emoji = ["1️⃣", "2️⃣", "3️⃣"][idx - 1]
+                message += f"{emoji} {item.name} (x{item.quantity})\n"
         
         # Footer
-        if time_window:
-            message += f"⏰ Time Window: {time_window}"
-        else:
-            now = datetime.utcnow()
-            message += f"⏰ Generated at: {now.strftime('%H:%M')} UTC"
+        now = datetime.utcnow()
+        message += f"\n⏰ Generated at: {now.strftime('%H:%M')} UTC"
         
         return message
     
@@ -203,7 +166,7 @@ class TelegramService:
             return False
     
     async def process_and_send_notifications(self) -> NotificationResultDTO:
-        """Main function to process pending orders and send notifications"""
+        """Main function to read aggregated stats and send notifications"""
         if not self.is_enabled():
             return NotificationResultDTO(
                 success=False,
@@ -212,21 +175,18 @@ class TelegramService:
             )
         
         try:
-            # Get pending orders
-            orders = await self.get_pending_orders()
+            # Get aggregated stats
+            stats = await self.get_aggregated_stats()
             
-            if not orders:
+            if not stats or stats.total_orders == 0:
                 return NotificationResultDTO(
                     success=True,
-                    message="No pending orders",
+                    message="No orders to report",
                     orders_processed=0
                 )
             
-            # Aggregate
-            aggregated = self._aggregate_orders(orders)
-            
             # Format message
-            message = self._format_message(aggregated)
+            message = self._format_message(stats)
             
             # Split if needed
             messages = self._split_message(message)
@@ -241,11 +201,11 @@ class TelegramService:
             
             # Clear Redis only if all messages sent successfully
             if all_sent:
-                await self.clear_pending_orders()
+                await self.clear_aggregated_stats()
                 return NotificationResultDTO(
                     success=True,
                     message="Notifications sent successfully",
-                    orders_processed=aggregated.total_orders,
+                    orders_processed=stats.total_orders,
                     messages_sent=len(messages)
                 )
             else:
