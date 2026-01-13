@@ -103,10 +103,26 @@ async def razorpay_webhook(
         payload = body.decode('utf-8')
         
         if not x_razorpay_signature:
+            logger.warning("Webhook request missing X-Razorpay-Signature header")
             raise HTTPException(status_code=400, detail="Missing X-Razorpay-Signature header")
+        
+        if not settings or not settings.razorpay_webhook_secret:
+            logger.error(
+                "RAZORPAY_WEBHOOK_SECRET is not set in environment variables. "
+                "If you configured a webhook secret in Razorpay Dashboard, you must set RAZORPAY_WEBHOOK_SECRET in your .env file."
+            )
+            raise HTTPException(
+                status_code=500, 
+                detail="Webhook secret not configured. Please set RAZORPAY_WEBHOOK_SECRET in your environment variables."
+            )
         
         razorpay_service = RazorpayService()
         if not razorpay_service.verify_webhook_signature(payload, x_razorpay_signature):
+            logger.error(
+                f"Webhook signature verification failed. "
+                f"Make sure RAZORPAY_WEBHOOK_SECRET matches the secret set in Razorpay Dashboard. "
+                f"Signature received: {x_razorpay_signature[:30]}..."
+            )
             raise HTTPException(status_code=400, detail="Invalid webhook signature")
         
         webhook_data = json.loads(payload)
@@ -115,17 +131,28 @@ async def razorpay_webhook(
         
         if event == "payment.captured":
             payment_entity = payload_data.get("payment", {}).get("entity", {})
-            order_entity = payload_data.get("order", {}).get("entity", {})
             
             razorpay_payment_id = payment_entity.get("id")
-            razorpay_order_id = order_entity.get("id")
-            order_id = order_entity.get("notes", {}).get("order_id")
+            razorpay_order_id = payment_entity.get("order_id")
+            order_id = payment_entity.get("notes", {}).get("order_id")
             
             if not all([order_id, razorpay_order_id, razorpay_payment_id]):
-                logger.warning(f"Incomplete webhook data: {webhook_data}")
+                logger.warning(f"Incomplete webhook data. Missing: order_id={order_id}, razorpay_order_id={razorpay_order_id}, razorpay_payment_id={razorpay_payment_id}")
+                logger.debug(f"Full webhook payload: {webhook_data}")
                 return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
             
             order_service = OrderService()
+            database = await db.get_database()
+            orders_collection = database[order_service.COLLECTION_NAME]
+            
+            existing_order = await orders_collection.find_one({"order_id": order_id})
+            if existing_order:
+                logger.info(f"Order {order_id} already exists in MongoDB, skipping duplicate webhook processing")
+                redis = await redis_client.get_client()
+                redis_key = f"pending_order:{order_id}"
+                await redis.delete(redis_key)
+                return JSONResponse(content={"status": "success", "order_id": order_id, "message": "already_processed"})
+            
             redis = await redis_client.get_client()
             redis_key = f"pending_order:{order_id}"
             
@@ -140,23 +167,25 @@ async def razorpay_webhook(
             order_dict["razorpay_payment_id"] = razorpay_payment_id
             order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
             
-            database = await db.get_database()
-            orders_collection = database[order_service.COLLECTION_NAME]
             logs_collection = database[order_service.ORDER_LOGS_COLLECTION]
             
-            result = await orders_collection.insert_one(order_dict)
-            order_dict["_id"] = result.inserted_id
-            
-            await logs_collection.insert_one({
-                "order_id": order_id,
-                "raw_data": order_dict.get("raw_order_log", {}),
-                "created_at": datetime.utcnow()
-            })
-            
-            await redis.delete(redis_key)
-            
-            logger.info(f"Webhook processed: Order {order_id} moved from Redis to MongoDB")
-            return JSONResponse(content={"status": "success", "order_id": order_id})
+            try:
+                result = await orders_collection.insert_one(order_dict)
+                order_dict["_id"] = result.inserted_id
+                
+                await logs_collection.insert_one({
+                    "order_id": order_id,
+                    "raw_data": order_dict.get("raw_order_log", {}),
+                    "created_at": datetime.utcnow()
+                })
+                
+                await redis.delete(redis_key)
+                logger.info(f"Webhook processed: Order {order_id} moved from Redis to MongoDB")
+                return JSONResponse(content={"status": "success", "order_id": order_id})
+            except Exception as e:
+                logger.error(f"Failed to process webhook for order {order_id}: {e}")
+                await redis.delete(redis_key)
+                raise HTTPException(status_code=500, detail=f"Failed to process order: {str(e)}")
         
         logger.info(f"Webhook event {event} received but not processed")
         return JSONResponse(content={"status": "ignored", "event": event})

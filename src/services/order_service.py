@@ -266,6 +266,17 @@ class OrderService:
         ):
             raise ValueError("Invalid payment signature")
         
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        
+        existing_order = await orders_collection.find_one({"order_id": order_id})
+        if existing_order:
+            logger.info(f"Order {order_id} already exists in MongoDB, skipping duplicate processing")
+            redis = await redis_client.get_client()
+            redis_key = f"pending_order:{order_id}"
+            await redis.delete(redis_key)
+            return Order(**existing_order)
+        
         redis = await redis_client.get_client()
         redis_key = f"pending_order:{order_id}"
         order_json = await redis.get(redis_key)
@@ -279,20 +290,22 @@ class OrderService:
         order_dict["razorpay_payment_id"] = razorpay_payment_id
         order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
         
-        database = await db.get_database()
-        orders_collection = database[self.COLLECTION_NAME]
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
         
-        result = await orders_collection.insert_one(order_dict)
-        order_dict["_id"] = result.inserted_id
-        
-        await logs_collection.insert_one({
-            "order_id": order_id,
-            "raw_data": order_dict.get("raw_order_log", {}),
-            "created_at": datetime.utcnow()
-        })
-        
-        await redis.delete(redis_key)
-        
-        logger.info(f"Payment verified and order created: {order_id}")
-        return Order(**order_dict)
+        try:
+            result = await orders_collection.insert_one(order_dict)
+            order_dict["_id"] = result.inserted_id
+            
+            await logs_collection.insert_one({
+                "order_id": order_id,
+                "raw_data": order_dict.get("raw_order_log", {}),
+                "created_at": datetime.utcnow()
+            })
+            
+            await redis.delete(redis_key)
+            logger.info(f"Payment verified and order created: {order_id}")
+            return Order(**order_dict)
+        except Exception as e:
+            logger.error(f"Failed to create order {order_id} in MongoDB: {e}")
+            await redis.delete(redis_key)
+            raise

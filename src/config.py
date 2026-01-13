@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Razorpay
     razorpay_key_id: str = Field(..., env="RAZORPAY_KEY_ID")
     razorpay_key_secret: str = Field(..., env="RAZORPAY_KEY_SECRET")
+    razorpay_webhook_secret: Optional[str] = Field(default=None, env="RAZORPAY_WEBHOOK_SECRET")
 
 
     @field_validator("admin_key", mode="before")

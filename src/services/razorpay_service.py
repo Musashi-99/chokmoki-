@@ -1,4 +1,5 @@
 import razorpay
+import razorpay.errors
 import hmac
 import hashlib
 from typing import Dict, Any
@@ -46,18 +47,28 @@ class RazorpayService:
             return False
     
     def verify_webhook_signature(self, payload: str, signature: str) -> bool:
-        """Verify Razorpay webhook signature"""
+        """Verify Razorpay webhook signature using Razorpay utility
+        
+        Note: If a webhook secret is set in Razorpay Dashboard, you MUST use that secret.
+        The API secret will NOT work if a webhook secret is configured in the dashboard.
+        """
         try:
-            generated_signature = hmac.new(
-                settings.razorpay_key_secret.encode('utf-8'),
-                payload.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
+            if not settings.razorpay_webhook_secret:
+                logger.error(
+                    "RAZORPAY_WEBHOOK_SECRET is not configured. "
+                    "If you set a webhook secret in Razorpay Dashboard, you MUST set RAZORPAY_WEBHOOK_SECRET "
+                    "in your environment variables. Webhook verification will fail without it."
+                )
+                return False
             
-            is_valid = hmac.compare_digest(generated_signature, signature)
-            if not is_valid:
-                logger.warning("Invalid webhook signature")
-            return is_valid
+            self.client.utility.verify_webhook_signature(payload, signature, settings.razorpay_webhook_secret)
+            logger.debug("Webhook signature verified successfully")
+            return True
+        except razorpay.errors.SignatureVerificationError as e:
+            logger.warning(f"Invalid webhook signature: {str(e)}")
+            logger.debug(f"Payload length: {len(payload)}, Signature prefix: {signature[:20] if signature else 'None'}...")
+            logger.debug(f"Using webhook secret: {'Set' if settings.razorpay_webhook_secret else 'Not set'}")
+            return False
         except Exception as e:
             logger.error(f"Error verifying webhook signature: {e}")
             return False
