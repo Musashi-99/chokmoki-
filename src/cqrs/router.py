@@ -51,17 +51,26 @@ from src.resources.ratings.queries import (
 from src.resources.ratings.mutations import (
     RatingCreateMutation,
 )
-from src.cqrs.queries import (
-    ShippingAddressListQuery,
-    ShippingAddressGetQuery,
-    SyncKeyGetQuery,
+from src.resources.contacts.queries import (
     ContactListQuery,
 )
-from src.cqrs.mutations import (
+from src.resources.contacts.mutations import (
     ContactCreateMutation,
+)
+from src.resources.shipping_addresses.queries import (
+    ShippingAddressListQuery,
+    ShippingAddressGetQuery,
+)
+from src.resources.shipping_addresses.mutations import (
     ShippingAddressCreateMutation,
     ShippingAddressUpdateMutation,
-    ShippingAddressDeleteMutation
+    ShippingAddressDeleteMutation,
+)
+from src.resources.newsletter.mutations import (
+    NewsletterSubscribeMutation,
+)
+from src.resources.sync_key.queries import (
+    SyncKeyGetQuery,
 )
 from src.plugins.admin_auth import validate_admin_key
 
@@ -111,6 +120,7 @@ class CQRSRouter:
         "analytics.trackEvent": TrackEventMutation,
         "analytics.trackMetric": TrackMetricMutation,
         "rating.create": RatingCreateMutation,
+        "newsletter.subscribe": NewsletterSubscribeMutation,
     }
     
     ADMIN_REQUIRED_OPERATIONS = {

@@ -1,3 +1,4 @@
 #todo
-1. so telegram service will send all data when trigged about all orders, thats not okay.
-2. store the total number of orders, total items, total price accumulated and last 3 ordered items with name and quantity, thats all, then only in one invokeaction it will work, else i dont know the size, and expire this after 24hrs, cause all data is stored in mongo so no issues if things miss.
+1. there are issues in reources there are repetated mutations, there wont be queries and mutation under cqrs, each of these will be separated in there own resources, else everything will be messed up
+2. separate everything, else it will be a problem.
+3. dont keep unused code, and dont keep duplicated code.

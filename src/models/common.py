@@ -14,6 +14,7 @@ class MutationResponseDTO(BaseModel, Generic[T]):
     """DTO for mutation responses"""
     data: Optional[T] = None
     success: Optional[bool] = None
+    message: Optional[str] = None
 
 
 class ListResponseDTO(BaseModel, Generic[T]):
