@@ -2,6 +2,7 @@ from typing import Dict, Any
 from src.cqrs.base import CommandMutation
 from src.services.rating_service import RatingService
 from src.models.rating import RatingCreate
+from src.models.common import MutationResponseDTO
 
 
 class RatingCreateMutation(CommandMutation):
@@ -18,4 +19,4 @@ class RatingCreateMutation(CommandMutation):
         )
         
         rating = await service.create(rating_data)
-        return {"data": rating.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=rating.model_dump(by_alias=True)).model_dump()

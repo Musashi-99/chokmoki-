@@ -3,6 +3,7 @@ from src.cqrs.base import CommandMutation
 from src.services.product_service import ProductService
 from src.services.sync_key_service import SyncKeyService
 from src.models.product import ProductCreate
+from src.models.common import MutationResponseDTO
 
 
 class ProductCreateMutation(CommandMutation):
@@ -14,7 +15,7 @@ class ProductCreateMutation(CommandMutation):
         sync_key_service = SyncKeyService()
         await sync_key_service.update_products_sync_key()
         
-        return {"data": product.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=product.model_dump(by_alias=True)).model_dump()
 
 
 class ProductUpdateMutation(CommandMutation):
@@ -32,7 +33,7 @@ class ProductUpdateMutation(CommandMutation):
         sync_key_service = SyncKeyService()
         await sync_key_service.update_products_sync_key()
         
-        return {"data": product.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=product.model_dump(by_alias=True)).model_dump()
 
 
 class ProductDeleteMutation(CommandMutation):
@@ -50,4 +51,4 @@ class ProductDeleteMutation(CommandMutation):
         sync_key_service = SyncKeyService()
         await sync_key_service.update_products_sync_key()
         
-        return {"success": True}
+        return MutationResponseDTO(success=True).model_dump()

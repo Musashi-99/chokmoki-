@@ -1,9 +1,10 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from bson import ObjectId
 from datetime import datetime
 from src.database.connection import db
 from src.models.rating import Rating, RatingCreate
 from src.models.order import Order
+from src.models.dto import RatingSummaryDTO
 from src.plugins.logger import logger
 
 
@@ -85,7 +86,7 @@ class RatingService:
         
         return ratings, total
     
-    async def get_summary(self, product_id: str) -> Dict[str, Any]:
+    async def get_summary(self, product_id: str) -> RatingSummaryDTO:
         """Get rating summary (count by star rating) for a product"""
         database = await db.get_database()
         ratings_collection = database[self.COLLECTION_NAME]
@@ -115,11 +116,11 @@ class RatingService:
         else:
             average = 0.0
         
-        return {
-            "average": average,
-            "total": total_ratings,
-            "by_star": star_counts
-        }
+        return RatingSummaryDTO(
+            average=average,
+            total=total_ratings,
+            by_star=star_counts
+        )
     
     async def check_user_can_rate(
         self, 

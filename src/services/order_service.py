@@ -1,23 +1,31 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from bson import ObjectId
 from datetime import datetime
 import uuid
 import json
 from src.database.connection import db
 from src.database.redis_connection import redis_client
-from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus
+from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder
+from src.models.common import PricingDTO
+from src.models.dto import OrderInitiateResponseDTO, OrderLogDTO
 from src.models.product import Product
 from src.services.product_service import ProductService
 from src.services.razorpay_service import RazorpayService
 from src.config import settings
 from src.plugins.logger import logger
 
+# Optional Telegram import
+try:
+    from src.services.telegram_service import TelegramService
+except ImportError:
+    TelegramService = None
+
 
 class OrderService:
     COLLECTION_NAME = "orders"
     ORDER_LOGS_COLLECTION = "order_logs"
     
-    def _validate_variant(self, product: Product, variant: Dict[str, str]) -> bool:
+    def _validate_variant(self, product: Product, variant: dict) -> bool:
         """Validate that the variant matches the product's variant structure"""
         if not product.product_variants:
             # If product has no variants, only accept default variant
@@ -55,19 +63,19 @@ class OrderService:
         
         return True
     
-    def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> Dict[str, float]:
+    def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> PricingDTO:
         """Recalculate pricing from validated items - never trust user data"""
         subtotal = sum(item.total_price for item in validated_items)
         discount = 0.0  # Can be calculated based on business logic
         shipping = 0.0  # Can be calculated based on shipping address
         total = subtotal - discount + shipping
         
-        return {
-            "subtotal": subtotal,
-            "discount": discount,
-            "shipping": shipping,
-            "total": total
-        }
+        return PricingDTO(
+            subtotal=subtotal,
+            discount=discount,
+            shipping=shipping,
+            total=total
+        )
     
     async def create(self, order_data: OrderCreateInput) -> Order:
         """Create order with validation and recalculation (for COD)"""
@@ -85,16 +93,17 @@ class OrderService:
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
         
+        # Convert to dict for MongoDB
         order_dict = {
             "order_id": order_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],
             "special_message": order_data.specialMessage or "",
-            "subtotal": pricing["subtotal"],
-            "discount": pricing["discount"],
-            "shipping": pricing["shipping"],
-            "total_amount": pricing["total"],
+            "subtotal": pricing.subtotal,
+            "discount": pricing.discount,
+            "shipping": pricing.shipping,
+            "total_amount": pricing.total,
             "payment_method": order_data.paymentMethod or "cod",
             "payment_status": "completed" if order_data.paymentMethod == "cod" else None,
             "status": OrderStatus(type="accepted").model_dump(),
@@ -105,13 +114,25 @@ class OrderService:
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
         
-        await logs_collection.insert_one({
+        # Convert log to dict for MongoDB
+        log_dict = {
             "order_id": order_id,
             "raw_data": raw_order_log,
             "created_at": datetime.utcnow()
-        })
+        }
+        await logs_collection.insert_one(log_dict)
+        
+        # Push to Telegram queue (non-blocking, best-effort)
+        if TelegramService:
+            telegram_service = TelegramService()
+            try:
+                await telegram_service.push_order_to_queue(order_dict)
+            except Exception as e:
+                logger.warning(f"Failed to push COD order to Telegram queue: {e}")
         
         logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
+        # Convert shipping_address dict to DTO when creating Order
+        order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
     
     async def get_by_id(self, order_id: str) -> Optional[Order]:
@@ -119,9 +140,12 @@ class OrderService:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
-        order = await collection.find_one({"order_id": order_id})
-        if order:
-            return Order(**order)
+        order_dict = await collection.find_one({"order_id": order_id})
+        if order_dict:
+            # Convert shipping_address dict to DTO
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+            return Order(**order_dict)
         return None
     
     async def get_by_mongo_id(self, mongo_id: str) -> Optional[Order]:
@@ -129,9 +153,12 @@ class OrderService:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
-        order = await collection.find_one({"_id": ObjectId(mongo_id)})
-        if order:
-            return Order(**order)
+        order_dict = await collection.find_one({"_id": ObjectId(mongo_id)})
+        if order_dict:
+            # Convert shipping_address dict to DTO
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+            return Order(**order_dict)
         return None
     
     async def list(self, skip: int = 0, limit: int = 20, user_email: Optional[str] = None) -> List[Order]:
@@ -144,9 +171,16 @@ class OrderService:
             query["user_email"] = user_email
         
         cursor = collection.find(query).sort("created_at", -1).skip(skip).limit(limit)
-        orders = await cursor.to_list(length=limit)
+        orders_dict = await cursor.to_list(length=limit)
         
-        return [Order(**order) for order in orders]
+        orders = []
+        for order_dict in orders_dict:
+            # Convert shipping_address dict to DTO
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+            orders.append(Order(**order_dict))
+        
+        return orders
     
     async def count(self, user_email: Optional[str] = None) -> int:
         """Count orders matching the given filters"""
@@ -159,13 +193,18 @@ class OrderService:
         
         return await collection.count_documents(query)
     
-    async def get_order_log(self, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_log(self, order_id: str) -> Optional[OrderLogDTO]:
         """Get raw order log for debugging"""
         database = await db.get_database()
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
         
-        log = await logs_collection.find_one({"order_id": order_id})
-        return log
+        log_dict = await logs_collection.find_one({"order_id": order_id})
+        if log_dict:
+            # Convert datetime to string if needed
+            if isinstance(log_dict.get("created_at"), datetime):
+                log_dict["created_at"] = log_dict["created_at"].isoformat()
+            return OrderLogDTO(**log_dict)
+        return None
     
     async def update_status(
         self,
@@ -185,7 +224,7 @@ class OrderService:
             return await self.get_by_id(order_id)
         return None
     
-    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], Dict[str, float]]:
+    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO]:
         """Validate order items and recalculate pricing - shared logic"""
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
@@ -214,7 +253,7 @@ class OrderService:
         pricing = self._recalculate_pricing(validated_items)
         return validated_items, pricing
     
-    async def initiate_order(self, order_data: OrderCreateInput) -> Dict[str, Any]:
+    async def initiate_order(self, order_data: OrderCreateInput) -> OrderInitiateResponseDTO:
         """Initiate order: validate, store in Redis, create Razorpay order"""
         if order_data.paymentMethod != "razorpay":
             raise ValueError("initiate_order only supports razorpay payment method")
@@ -226,16 +265,17 @@ class OrderService:
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
         
+        # Convert to dict for Redis storage
         order_dict = {
             "order_id": order_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],
             "special_message": order_data.specialMessage or "",
-            "subtotal": pricing["subtotal"],
-            "discount": pricing["discount"],
-            "shipping": pricing["shipping"],
-            "total_amount": pricing["total"],
+            "subtotal": pricing.subtotal,
+            "discount": pricing.discount,
+            "shipping": pricing.shipping,
+            "total_amount": pricing.total,
             "payment_method": "razorpay",
             "payment_status": "pending",
             "status": OrderStatus(type="accepted").model_dump(),
@@ -249,18 +289,18 @@ class OrderService:
         
         razorpay_service = RazorpayService()
         razorpay_order = razorpay_service.create_order(
-            amount=pricing["total"],
+            amount=pricing.total,
             notes={"order_id": order_id, "user_email": order_data.userEmail}
         )
         
-        logger.info(f"Order initiated: {order_id}, Razorpay order: {razorpay_order['id']}")
+        logger.info(f"Order initiated: {order_id}, Razorpay order: {razorpay_order.id}")
         
-        return {
-            "order_id": order_id,
-            "razorpay_order_id": razorpay_order["id"],
-            "razorpay_key_id": settings.razorpay_key_id,
-            "amount": pricing["total"]
-        }
+        return OrderInitiateResponseDTO(
+            order_id=order_id,
+            razorpay_order_id=razorpay_order.id,
+            razorpay_key_id=settings.razorpay_key_id,
+            amount=pricing.total
+        )
     
     async def verify_payment(
         self,
@@ -307,14 +347,19 @@ class OrderService:
             result = await orders_collection.insert_one(order_dict)
             order_dict["_id"] = result.inserted_id
             
-            await logs_collection.insert_one({
+            # Convert log to dict for MongoDB
+            log_dict = {
                 "order_id": order_id,
                 "raw_data": order_dict.get("raw_order_log", {}),
                 "created_at": datetime.utcnow()
-            })
+            }
+            await logs_collection.insert_one(log_dict)
             
             await redis.delete(redis_key)
             logger.info(f"Payment verified and order created: {order_id}")
+            # Convert shipping_address dict to DTO when creating Order
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
             return Order(**order_dict)
         except Exception as e:
             logger.error(f"Failed to create order {order_id} in MongoDB: {e}")

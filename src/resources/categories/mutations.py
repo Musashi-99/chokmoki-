@@ -2,6 +2,7 @@ from typing import Dict, Any
 from src.cqrs.base import CommandMutation
 from src.services.category_service import CategoryService
 from src.models.category import CategoryCreate
+from src.models.common import MutationResponseDTO
 
 
 class CategoryCreateMutation(CommandMutation):
@@ -9,7 +10,7 @@ class CategoryCreateMutation(CommandMutation):
         service = CategoryService()
         category_data = CategoryCreate(**params)
         category = await service.create(category_data)
-        return {"data": category.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=category.model_dump(by_alias=True)).model_dump()
 
 
 class CategoryUpdateMutation(CommandMutation):
@@ -39,4 +40,4 @@ class CategoryDeleteMutation(CommandMutation):
         if not success:
             raise ValueError("Category not found")
         
-        return {"success": True}
+        return MutationResponseDTO(success=True).model_dump()

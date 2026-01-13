@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, Tuple
 from src.cqrs.base import CommandQuery
 from src.services.analytics_service import AnalyticsService
+from src.models.common import ListResponseDTO, QueryResponseDTO
 from datetime import datetime, timedelta, timezone
 
 
@@ -44,10 +45,10 @@ class GetEventsQuery(CommandQuery, AnalyticsQueryMixin):
             skip=params.get("skip", 0)
         )
         
-        return {
-            "data": [event.model_dump(by_alias=True) for event in events],
-            "count": len(events)
-        }
+        return ListResponseDTO(
+            data=[event.model_dump(by_alias=True) for event in events],
+            count=len(events)
+        ).model_dump()
 
 
 class GetUniqueUsersQuery(CommandQuery, AnalyticsQueryMixin):
@@ -57,7 +58,7 @@ class GetUniqueUsersQuery(CommandQuery, AnalyticsQueryMixin):
         
         count = await service.get_unique_users(start_date=start_date, end_date=end_date)
         
-        return {"data": {"unique_users": count}}
+        return QueryResponseDTO(data={"unique_users": count}).model_dump()
 
 
 class GetEventCountQuery(CommandQuery, AnalyticsQueryMixin):
@@ -75,7 +76,7 @@ class GetEventCountQuery(CommandQuery, AnalyticsQueryMixin):
             end_date=end_date
         )
         
-        return {"data": {"event_type": event_type, "count": count}}
+        return QueryResponseDTO(data={"event_type": event_type, "count": count}).model_dump()
 
 
 class GetRevenueQuery(CommandQuery, AnalyticsQueryMixin):
@@ -85,7 +86,7 @@ class GetRevenueQuery(CommandQuery, AnalyticsQueryMixin):
         
         revenue = await service.get_revenue(start_date=start_date, end_date=end_date)
         
-        return {"data": {"revenue": revenue}}
+        return QueryResponseDTO(data={"revenue": revenue}).model_dump()
 
 
 class GetTopSearchesQuery(CommandQuery, AnalyticsQueryMixin):
@@ -100,7 +101,7 @@ class GetTopSearchesQuery(CommandQuery, AnalyticsQueryMixin):
             limit=limit
         )
         
-        return {"data": searches}
+        return QueryResponseDTO(data=searches).model_dump()
 
 
 class GetTopProductsQuery(CommandQuery, AnalyticsQueryMixin):
@@ -117,7 +118,7 @@ class GetTopProductsQuery(CommandQuery, AnalyticsQueryMixin):
             limit=limit
         )
         
-        return {"data": products}
+        return QueryResponseDTO(data=products).model_dump()
 
 
 class GetAnalyticsOverviewQuery(CommandQuery, AnalyticsQueryMixin):
@@ -137,17 +138,15 @@ class GetAnalyticsOverviewQuery(CommandQuery, AnalyticsQueryMixin):
         top_searches = await service.get_top_searches(start_date=start_date, end_date=end_date, limit=5)
         top_products = await service.get_top_products("views", start_date=start_date, end_date=end_date, limit=5)
         
-        return {
-            "data": {
-                "unique_users": unique_users,
-                "revenue": revenue,
-                "orders": orders,
-                "product_views": product_views,
-                "searches": searches,
-                "cart_adds": cart_adds,
-                "top_searches": top_searches,
-                "top_products": top_products,
-                "conversion_rate": (orders / product_views * 100) if product_views > 0 else 0,
-                "cart_abandonment_rate": ((cart_adds - orders) / cart_adds * 100) if cart_adds > 0 else 0,
-            }
-        }
+        return QueryResponseDTO(data={
+            "unique_users": unique_users,
+            "revenue": revenue,
+            "orders": orders,
+            "product_views": product_views,
+            "searches": searches,
+            "cart_adds": cart_adds,
+            "top_searches": top_searches,
+            "top_products": top_products,
+            "conversion_rate": (orders / product_views * 100) if product_views > 0 else 0,
+            "cart_abandonment_rate": ((cart_adds - orders) / cart_adds * 100) if cart_adds > 0 else 0,
+        }).model_dump()

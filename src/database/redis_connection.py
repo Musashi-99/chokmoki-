@@ -44,7 +44,7 @@ class RedisSingleton:
             await self._client.close()
             self._client = None
         if self._connection_pool:
-            self._connection_pool.disconnect()
+            await self._connection_pool.disconnect()
             self._connection_pool = None
     
     @classmethod

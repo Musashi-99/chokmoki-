@@ -3,6 +3,7 @@ from src.cqrs.base import CommandQuery
 from src.services.sync_key_service import SyncKeyService
 from src.services.shipping_address_service import ShippingAddressService
 from src.services.contact_service import ContactService
+from src.models.common import QueryResponseDTO, ListResponseDTO
 
 
 class SyncKeyGetQuery(CommandQuery):
@@ -12,7 +13,7 @@ class SyncKeyGetQuery(CommandQuery):
         
         if key_type == "products":
             sync_key = await service.get_or_create_products_sync_key()
-            return {"data": {"key": "products", "value": sync_key}}
+            return QueryResponseDTO(data={"key": "products", "value": sync_key}).model_dump()
         
         raise ValueError(f"Unknown sync key type: {key_type}")
 
@@ -26,10 +27,10 @@ class ShippingAddressListQuery(CommandQuery):
             raise ValueError("email is required")
         
         addresses = await service.get_by_email(email)
-        return {
-            "data": [addr.model_dump(by_alias=True) for addr in addresses],
-            "count": len(addresses)
-        }
+        return ListResponseDTO(
+            data=[addr.model_dump(by_alias=True) for addr in addresses],
+            count=len(addresses)
+        ).model_dump()
 
 
 class ShippingAddressGetQuery(CommandQuery):
@@ -49,7 +50,7 @@ class ShippingAddressGetQuery(CommandQuery):
         if email and address.email != email:
             raise ValueError("Address not found or access denied")
         
-        return {"data": address.model_dump(by_alias=True)}
+        return QueryResponseDTO(data=address.model_dump(by_alias=True)).model_dump()
 
 
 class ContactListQuery(CommandQuery):
@@ -61,7 +62,7 @@ class ContactListQuery(CommandQuery):
         contacts = await service.list(skip=skip, limit=limit)
         total = await service.count()
         
-        return {
-            "data": [contact.model_dump(by_alias=True) for contact in contacts],
-            "count": total
-        }
+        return ListResponseDTO(
+            data=[contact.model_dump(by_alias=True) for contact in contacts],
+            count=total
+        ).model_dump()

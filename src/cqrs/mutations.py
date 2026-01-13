@@ -10,6 +10,7 @@ from src.models.category import CategoryCreate
 from src.models.order import OrderCreateInput, OrderStatus
 from src.models.contact import ContactCreate
 from src.models.shipping_address import ShippingAddressCreate, ShippingAddressUpdate
+from src.models.common import MutationResponseDTO
 from src.plugins.logger import logger
 
 
@@ -18,7 +19,7 @@ class ProductCreateMutation(CommandMutation):
         service = ProductService()
         product_data = ProductCreate(**params)
         product = await service.create(product_data)
-        return {"data": product.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=product.model_dump(by_alias=True)).model_dump()
 
 
 class ProductUpdateMutation(CommandMutation):
@@ -33,7 +34,7 @@ class ProductUpdateMutation(CommandMutation):
         if not product:
             raise ValueError("Product not found")
         
-        return {"data": product.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=product.model_dump(by_alias=True)).model_dump()
 
 
 class ProductDeleteMutation(CommandMutation):
@@ -48,7 +49,7 @@ class ProductDeleteMutation(CommandMutation):
         if not success:
             raise ValueError("Product not found")
         
-        return {"success": True}
+        return MutationResponseDTO(success=True).model_dump()
 
 
 class CategoryCreateMutation(CommandMutation):
@@ -56,7 +57,7 @@ class CategoryCreateMutation(CommandMutation):
         service = CategoryService()
         category_data = CategoryCreate(**params)
         category = await service.create(category_data)
-        return {"data": category.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=category.model_dump(by_alias=True)).model_dump()
 
 
 class CategoryUpdateMutation(CommandMutation):
@@ -71,7 +72,7 @@ class CategoryUpdateMutation(CommandMutation):
         if not category:
             raise ValueError("Category not found")
         
-        return {"data": category.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=category.model_dump(by_alias=True)).model_dump()
 
 
 class CategoryDeleteMutation(CommandMutation):
@@ -86,7 +87,7 @@ class CategoryDeleteMutation(CommandMutation):
         if not success:
             raise ValueError("Category not found")
         
-        return {"success": True}
+        return MutationResponseDTO(success=True).model_dump()
 
 
 class OrderCreateMutation(CommandMutation):
@@ -104,7 +105,7 @@ class OrderCreateMutation(CommandMutation):
         # Create order with validation
         order_data = OrderCreateInput(**params)
         order = await service.create(order_data)
-        return {"data": order.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=order.model_dump(by_alias=True)).model_dump()
 
 
 class OrderStatusUpdateMutation(CommandMutation):
@@ -124,7 +125,7 @@ class OrderStatusUpdateMutation(CommandMutation):
         if not order:
             raise ValueError("Order not found")
         
-        return {"data": order.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=order.model_dump(by_alias=True)).model_dump()
 
 
 class ContactCreateMutation(CommandMutation):
@@ -132,7 +133,7 @@ class ContactCreateMutation(CommandMutation):
         service = ContactService()
         contact_data = ContactCreate(**params)
         contact = await service.create(contact_data)
-        return {"data": contact.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=contact.model_dump(by_alias=True)).model_dump()
 
 
 class ShippingAddressCreateMutation(CommandMutation):
@@ -140,7 +141,7 @@ class ShippingAddressCreateMutation(CommandMutation):
         service = ShippingAddressService()
         address_data = ShippingAddressCreate(**params)
         address = await service.create(address_data)
-        return {"data": address.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=address.model_dump(by_alias=True)).model_dump()
 
 
 class ShippingAddressUpdateMutation(CommandMutation):
@@ -159,7 +160,7 @@ class ShippingAddressUpdateMutation(CommandMutation):
         if not address:
             raise ValueError("Address not found or access denied")
         
-        return {"data": address.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=address.model_dump(by_alias=True)).model_dump()
 
 
 class ShippingAddressDeleteMutation(CommandMutation):
@@ -177,5 +178,5 @@ class ShippingAddressDeleteMutation(CommandMutation):
         if not success:
             raise ValueError("Address not found or access denied")
         
-        return {"success": True}
+        return MutationResponseDTO(success=True).model_dump()
 

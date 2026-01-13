@@ -23,6 +23,7 @@ try:
     from src.cqrs.router import CQRSRouter
     from src.services.razorpay_service import RazorpayService
     from src.services.order_service import OrderService
+    from src.services.telegram_service import TelegramService
     from src.plugins.logger import logger
     from src.config import settings
 except Exception as e:
@@ -32,6 +33,7 @@ except Exception as e:
     CQRSRouter = None
     RazorpayService = None
     OrderService = None
+    TelegramService = None
     logger = None
     settings = None
 
@@ -210,6 +212,15 @@ async def razorpay_webhook(
                     "created_at": datetime.utcnow()
                 })
                 
+                # Push to Telegram queue (non-blocking, best-effort)
+                if TelegramService:
+                    telegram_service = TelegramService()
+                    try:
+                        await telegram_service.push_order_to_queue(order_dict)
+                    except Exception as e:
+                        if logger:
+                            logger.warning(f"Failed to push order to Telegram queue: {e}")
+                
                 await redis.delete(redis_key)
                 logger.info(f"Webhook processed: Order {order_id} moved from Redis to MongoDB")
                 return JSONResponse(content={"status": "success", "order_id": order_id})
@@ -371,3 +382,25 @@ async def health_check():
         "redis": redis_stats,
         "environment": env_info,
     }
+
+
+@app.post("/cron/telegram/notify")
+async def telegram_notify_cron():
+    """Cron endpoint to process and send Telegram notifications"""
+    if TelegramService is None:
+        raise HTTPException(status_code=500, detail="TelegramService not initialized")
+    
+    try:
+        telegram_service = TelegramService()
+        result = await telegram_service.process_and_send_notifications()
+        
+        if result.success:
+            return JSONResponse(content=result.model_dump())
+        else:
+            raise HTTPException(status_code=500, detail=result.message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if logger:
+            logger.error(f"Telegram cron error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

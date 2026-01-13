@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     razorpay_key_secret: str = Field(..., env="RAZORPAY_KEY_SECRET")
     razorpay_webhook_secret: Optional[str] = Field(default=None, env="RAZORPAY_WEBHOOK_SECRET")
 
+    # Telegram
+    telegram_enabled: bool = Field(default=False, env="TELEGRAM_ENABLED")
+    telegram_bot_token: Optional[str] = Field(default=None, env="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: Optional[str] = Field(default=None, env="TELEGRAM_CHAT_ID")
+    telegram_message_max_chars: int = Field(default=3800, env="TELEGRAM_MESSAGE_MAX_CHARS")
+    telegram_redis_key: str = Field(default="telegram:orders:pending", env="TELEGRAM_REDIS_KEY")
+    telegram_product_base_url: str = Field(default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL")
+
 
     @field_validator("admin_key", mode="after")
     @classmethod

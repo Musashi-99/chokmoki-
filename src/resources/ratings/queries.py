@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from src.cqrs.base import CommandQuery
 from src.services.rating_service import RatingService
+from src.models.common import ListResponseDTO, QueryResponseDTO
 
 
 class RatingListQuery(CommandQuery):
@@ -15,10 +16,10 @@ class RatingListQuery(CommandQuery):
         
         ratings, total = await service.get_by_product(product_id, skip=skip, limit=limit)
         
-        return {
-            "data": [rating.model_dump(by_alias=True) for rating in ratings],
-            "count": total
-        }
+        return ListResponseDTO(
+            data=[rating.model_dump(by_alias=True) for rating in ratings],
+            count=total
+        ).model_dump()
 
 
 class RatingSummaryQuery(CommandQuery):
@@ -30,7 +31,7 @@ class RatingSummaryQuery(CommandQuery):
             raise ValueError("product_id is required")
         
         summary = await service.get_summary(product_id)
-        return {"data": summary}
+        return QueryResponseDTO(data=summary.model_dump()).model_dump()
 
 
 class RatingCanRateQuery(CommandQuery):
@@ -44,4 +45,4 @@ class RatingCanRateQuery(CommandQuery):
             raise ValueError("order_id, product_id, and email are required")
         
         can_rate = await service.check_user_can_rate(order_id, product_id, email)
-        return {"data": {"can_rate": can_rate}}
+        return QueryResponseDTO(data={"can_rate": can_rate}).model_dump()

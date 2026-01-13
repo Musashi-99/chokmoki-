@@ -2,9 +2,10 @@ import razorpay
 import razorpay.errors
 import hmac
 import hashlib
-from typing import Dict, Any
+from typing import Optional
 from src.config import settings
 from src.plugins.logger import logger
+from src.models.dto import RazorpayOrderResponseDTO
 
 
 class RazorpayService:
@@ -13,7 +14,7 @@ class RazorpayService:
             auth=(settings.razorpay_key_id, settings.razorpay_key_secret)
         )
     
-    def create_order(self, amount: float, currency: str = "INR", notes: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_order(self, amount: float, currency: str = "INR", notes: Optional[dict] = None) -> RazorpayOrderResponseDTO:
         """Create a Razorpay order"""
         try:
             order_data = {
@@ -21,9 +22,9 @@ class RazorpayService:
                 "currency": currency,
                 "notes": notes or {}
             }
-            order = self.client.order.create(data=order_data)
-            logger.info(f"Razorpay order created: {order['id']}")
-            return order
+            order_dict = self.client.order.create(data=order_data)
+            logger.info(f"Razorpay order created: {order_dict['id']}")
+            return RazorpayOrderResponseDTO(**order_dict)
         except Exception as e:
             logger.error(f"Failed to create Razorpay order: {e}")
             raise ValueError(f"Failed to create payment order: {str(e)}")

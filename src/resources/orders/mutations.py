@@ -2,6 +2,7 @@ from typing import Dict, Any
 from src.cqrs.base import CommandMutation
 from src.services.order_service import OrderService
 from src.models.order import OrderCreateInput, OrderStatus
+from src.models.common import MutationResponseDTO
 
 
 class OrderCreateMutation(CommandMutation):
@@ -17,7 +18,7 @@ class OrderCreateMutation(CommandMutation):
         
         order_data = OrderCreateInput(**params)
         order = await service.create(order_data)
-        return {"data": order.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=order.model_dump(by_alias=True)).model_dump()
 
 
 class OrderInitiateMutation(CommandMutation):
@@ -33,7 +34,7 @@ class OrderInitiateMutation(CommandMutation):
         
         order_data = OrderCreateInput(**params)
         result = await service.initiate_order(order_data)
-        return {"data": result}
+        return MutationResponseDTO(data=result.model_dump()).model_dump()
 
 
 class OrderVerifyPaymentMutation(CommandMutation):
@@ -51,7 +52,7 @@ class OrderVerifyPaymentMutation(CommandMutation):
         order = await service.verify_payment(
             order_id, razorpay_order_id, razorpay_payment_id, razorpay_signature
         )
-        return {"data": order.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=order.model_dump(by_alias=True)).model_dump()
 
 
 class OrderStatusUpdateMutation(CommandMutation):
@@ -71,4 +72,4 @@ class OrderStatusUpdateMutation(CommandMutation):
         if not order:
             raise ValueError("Order not found")
         
-        return {"data": order.model_dump(by_alias=True)}
+        return MutationResponseDTO(data=order.model_dump(by_alias=True)).model_dump()

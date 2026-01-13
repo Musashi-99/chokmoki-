@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from src.cqrs.base import CommandQuery
 from src.services.product_service import ProductService
+from src.models.common import ListResponseDTO, QueryResponseDTO
 
 
 class ProductListQuery(CommandQuery):
@@ -14,10 +15,7 @@ class ProductListQuery(CommandQuery):
         
         products = await service.list(skip=skip, limit=limit, active=active, category_id=category_id, include_categories=include_categories)
         total = await service.count(active=active, category_id=category_id)
-        return {
-            "data": products,
-            "count": total
-        }
+        return ListResponseDTO(data=products, count=total).model_dump()
 
 
 class ProductGetQuery(CommandQuery):
@@ -32,7 +30,7 @@ class ProductGetQuery(CommandQuery):
         if not product:
             raise ValueError("Product not found")
         
-        return {"data": product.model_dump(by_alias=True)}
+        return QueryResponseDTO(data=product.model_dump(by_alias=True)).model_dump()
 
 
 class ProductSearchQuery(CommandQuery):
@@ -48,10 +46,7 @@ class ProductSearchQuery(CommandQuery):
         
         products = await service.search(search_term, skip=skip, limit=limit, include_categories=include_categories)
         total = await service.search_count(search_term)
-        return {
-            "data": products,
-            "count": total
-        }
+        return ListResponseDTO(data=products, count=total).model_dump()
 
 
 class ProductGetByIdsQuery(CommandQuery):
@@ -67,7 +62,4 @@ class ProductGetByIdsQuery(CommandQuery):
             raise ValueError("Product IDs must be a list")
         
         products = await service.get_by_ids(product_ids, include_categories=include_categories)
-        return {
-            "data": products,
-            "count": len(products)
-        }
+        return ListResponseDTO(data=products, count=len(products)).model_dump()

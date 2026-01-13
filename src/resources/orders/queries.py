@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from src.cqrs.base import CommandQuery
 from src.services.order_service import OrderService
+from src.models.common import ListResponseDTO, QueryResponseDTO
 
 
 class OrderListQuery(CommandQuery):
@@ -12,10 +13,10 @@ class OrderListQuery(CommandQuery):
         
         orders = await service.list(skip=skip, limit=limit, user_email=user_email)
         total = await service.count(user_email=user_email)
-        return {
-            "data": [order.model_dump(by_alias=True) for order in orders],
-            "count": total
-        }
+        return ListResponseDTO(
+            data=[order.model_dump(by_alias=True) for order in orders],
+            count=total
+        ).model_dump()
 
 
 class OrderGetQuery(CommandQuery):
@@ -30,7 +31,7 @@ class OrderGetQuery(CommandQuery):
         if not order:
             raise ValueError("Order not found")
         
-        return {"data": order.model_dump(by_alias=True)}
+        return QueryResponseDTO(data=order.model_dump(by_alias=True)).model_dump()
 
 
 class OrderLogQuery(CommandQuery):
@@ -45,4 +46,4 @@ class OrderLogQuery(CommandQuery):
         if not log:
             raise ValueError("Order log not found")
         
-        return {"data": log}
+        return QueryResponseDTO(data=log.model_dump()).model_dump()
