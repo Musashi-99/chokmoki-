@@ -1,11 +1,13 @@
 import redis.asyncio as redis
 from typing import Optional
 from src.config import settings
+import os
 
 
 class RedisSingleton:
     _instance: Optional['RedisSingleton'] = None
     _client: Optional[redis.Redis] = None
+    _connection_pool: Optional[redis.ConnectionPool] = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -14,10 +16,21 @@ class RedisSingleton:
     
     async def connect(self):
         if self._client is None:
-            self._client = await redis.from_url(
+            max_connections = int(os.getenv("REDIS_MAX_CONNECTIONS", "10"))
+            socket_connect_timeout = int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5"))
+            socket_timeout = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
+            retry_on_timeout = os.getenv("REDIS_RETRY_ON_TIMEOUT", "true").lower() == "true"
+            
+            self._connection_pool = redis.ConnectionPool.from_url(
                 settings.redis_url,
+                max_connections=max_connections,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_timeout=socket_timeout,
+                retry_on_timeout=retry_on_timeout,
                 decode_responses=True
             )
+            
+            self._client = redis.Redis(connection_pool=self._connection_pool)
         return self._client
     
     async def get_client(self):
@@ -29,6 +42,9 @@ class RedisSingleton:
         if self._client:
             await self._client.close()
             self._client = None
+        if self._connection_pool:
+            self._connection_pool.disconnect()
+            self._connection_pool = None
     
     @classmethod
     def get_instance(cls):

@@ -1,10 +1,11 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional
 from src.config import settings
+import os
 
 
 class MongoSingleton:
-    _instance: Optional[AsyncIOMotorClient] = None
+    _instance: Optional['MongoSingleton'] = None
     _client: Optional[AsyncIOMotorClient] = None
     
     def __new__(cls):
@@ -14,7 +15,19 @@ class MongoSingleton:
     
     async def connect(self):
         if self._client is None:
-            self._client = AsyncIOMotorClient(settings.mongodb_uri)
+            max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "10"))
+            min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "1"))
+            max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "45000"))
+            
+            self._client = AsyncIOMotorClient(
+                settings.mongodb_uri,
+                maxPoolSize=max_pool_size,
+                minPoolSize=min_pool_size,
+                maxIdleTimeMS=max_idle_time_ms,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=20000,
+            )
         return self._client
     
     async def get_database(self):

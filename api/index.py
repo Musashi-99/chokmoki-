@@ -11,6 +11,10 @@ import platform
 import asyncio
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
 # Optional imports – do NOT crash boot
 try:
     from src.database.connection import db
@@ -58,6 +62,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database and Redis connections on startup"""
+    try:
+        if db:
+            await db.connect()
+        if redis_client:
+            await redis_client.connect()
+    except Exception as e:
+        if logger:
+            logger.error(f"Startup connection error: {e}")
+        print(f"Startup connection error: {e}", file=sys.stderr)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database and Redis connections on shutdown"""
+    try:
+        if db:
+            await db.close()
+        if redis_client:
+            await redis_client.close()
+    except Exception as e:
+        if logger:
+            logger.error(f"Shutdown connection error: {e}")
+        print(f"Shutdown connection error: {e}", file=sys.stderr)
 
 
 @app.post("/")

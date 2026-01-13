@@ -2,9 +2,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import os
-from dotenv import load_dotenv
 
-load_dotenv(override=False)
 
 class Settings(BaseSettings):
     # Mongo
