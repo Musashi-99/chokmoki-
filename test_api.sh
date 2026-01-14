@@ -4,7 +4,7 @@ BASE_URL="https://lowkey-backend-omega.vercel.app"
 
 echo "Testing Health Endpoint..."
 echo "=========================="
-curl -s "$BASE_URL/health" | jq .
+curl -s "$BASE_URL/health"
 echo -e "\n"
 
 echo "Testing Product List Query..."
@@ -18,7 +18,7 @@ curl -s -X POST "$BASE_URL/" \
       "page": 1,
       "pageSize": 5
     }
-  }' | jq .
+  }'
 echo -e "\n"
 
 echo "Testing Category List Query..."
@@ -29,4 +29,4 @@ curl -s -X POST "$BASE_URL/" \
     "type": "query",
     "operation": "category.list",
     "params": {}
-  }' | jq .
+  }'
