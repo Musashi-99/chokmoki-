@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     telegram_redis_key: str = Field(default="telegram:orders:pending", env="TELEGRAM_REDIS_KEY")
     telegram_product_base_url: str = Field(default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL")
 
+    # Rate Limiting
+    rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
+    rate_limit_normal_get: int = Field(default=40, env="RATE_LIMIT_NORMAL_GET")
+    rate_limit_normal_post: int = Field(default=40, env="RATE_LIMIT_NORMAL_POST")
+    rate_limit_normal_time: str = Field(default="3m", env="RATE_LIMIT_NORMAL_TIME")
+    rate_limit_order_max: int = Field(default=5, env="RATE_LIMIT_ORDER_MAX")
+    rate_limit_order_time: str = Field(default="24h", env="RATE_LIMIT_ORDER_TIME")
+
 
     @field_validator("admin_key", mode="after")
     @classmethod

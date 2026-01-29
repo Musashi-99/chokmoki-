@@ -26,6 +26,7 @@ try:
     from src.services.telegram_service import TelegramService
     from src.plugins.logger import logger
     from src.config import settings
+    from src.plugins.rate_limit import RateLimitMiddleware
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -36,6 +37,7 @@ except Exception as e:
     TelegramService = None
     logger = None
     settings = None
+    RateLimitMiddleware = None
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -91,6 +93,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if RateLimitMiddleware:
+    app.add_middleware(RateLimitMiddleware)
 
 
 @app.post("/")
