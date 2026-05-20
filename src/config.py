@@ -1,7 +1,6 @@
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
-import os
 
 
 class Settings(BaseSettings):
@@ -10,8 +9,11 @@ class Settings(BaseSettings):
     mongodb_db_name: str = Field(default="lowkey_ecom", env="MONGODB_DB_NAME")
 
     # Auth
-    clerk_secret_key: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
-    admin_key: str = Field(default="", env="ADMIN_KEYS")
+    admin_email: str = Field(default="admin@chokmoki.com", env="ADMIN_EMAIL")
+    admin_password: str = Field(default="admin123", env="ADMIN_PASSWORD")
+    jwt_secret: str = Field(default="chokmoki-jwt-secret-change-me", env="JWT_SECRET")
+    jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
+    jwt_expiration_hours: int = Field(default=24, env="JWT_EXPIRATION_HOURS")
 
     # Infra
     redis_url: str = Field(..., env="REDIS_URL")
@@ -32,6 +34,14 @@ class Settings(BaseSettings):
     telegram_redis_key: str = Field(default="telegram:orders:pending", env="TELEGRAM_REDIS_KEY")
     telegram_product_base_url: str = Field(default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL")
 
+    # R2 / S3
+    r2_account_id: str = Field(default="", env="R2_ACCOUNT_ID")
+    r2_access_key_id: str = Field(default="", env="R2_ACCESS_KEY_ID")
+    r2_secret_access_key: str = Field(default="", env="R2_SECRET_ACCESS_KEY")
+    r2_bucket: str = Field(default="chokmoki", env="R2_BUCKET")
+    r2_key_prefix: str = Field(default="", env="R2_KEY_PREFIX")
+    r2_public_base_url: str = Field(default="", env="R2_PUBLIC_BASE_URL")
+
     # Rate Limiting
     rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
     rate_limit_normal_get: int = Field(default=40, env="RATE_LIMIT_NORMAL_GET")
@@ -40,16 +50,6 @@ class Settings(BaseSettings):
     rate_limit_order_max: int = Field(default=5, env="RATE_LIMIT_ORDER_MAX")
     rate_limit_order_time: str = Field(default="24h", env="RATE_LIMIT_ORDER_TIME")
 
-
-    @field_validator("admin_key", mode="after")
-    @classmethod
-    def validate_admin_key(cls, v):
-        if v is None or v == "":
-            env_value = os.getenv("ADMIN_KEYS", "")
-            if not env_value:
-                raise ValueError("ADMIN_KEYS environment variable is required. Please set it in your .env file.")
-            return env_value
-        return v
 
     model_config = SettingsConfigDict(
         env_file=".env",

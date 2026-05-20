@@ -2,6 +2,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from pydantic_core import core_schema
 from bson import ObjectId
+from datetime import datetime
 
 
 class PyObjectId(ObjectId):
@@ -25,6 +26,7 @@ class PyObjectId(ObjectId):
         return field_schema
 
 
+# Backward-compatible legacy models for order system compatibility
 class Media(BaseModel):
     url: str
     mimetype: str
@@ -41,18 +43,29 @@ class ProductVariant(BaseModel):
     variant_values: List[VariantValue]
 
 
-class Product(BaseModel):
+class JewelryProduct(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    slug: str
     name: str
-    brand: str
-    categories: List[PyObjectId] = []
-    product_description: str = ""
-    mrp_price: float
-    selling_price: float
-    tags: List[str] = []
-    medias: List[Media] = []
-    features: List[str] = []
+    price_inr: int
+    category: str
+    collection: str
+    thumbnail: str
+    gallery: List[str] = []
+    material: str = ""
+    craftsmanship: str = ""
+    description: str = ""
+    story: Optional[str] = None
+    sizes: List[str] = []
+    is_best_seller: bool = False
+    is_curated: bool = False
+    weight_grams: Optional[float] = None
+    purity: str = "92.5% Sterling Silver"
+    stock_status: str = "in_stock"
     active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Backward-compatible fields for order system
+    selling_price: float = 0
     product_variants: List[ProductVariant] = []
     
     model_config = {
@@ -62,16 +75,57 @@ class Product(BaseModel):
     }
 
 
-class ProductCreate(BaseModel):
+class JewelryProductCreate(BaseModel):
+    slug: str
     name: str
-    brand: str
-    categories: List[str] = []
+    price_inr: int
+    category: str
+    collection: str
+    thumbnail: str
+    gallery: List[str] = []
+    material: str = ""
+    craftsmanship: str = ""
+    description: str = ""
+    story: Optional[str] = None
+    sizes: List[str] = []
+    is_best_seller: bool = False
+    is_curated: bool = False
+    weight_grams: Optional[float] = None
+    purity: str = "92.5% Sterling Silver"
+    stock_status: str = "in_stock"
+    active: bool = True
+
+
+class Product(BaseModel):
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    name: str
+    brand: str = ""
+    categories: List[PyObjectId] = []
     product_description: str = ""
-    mrp_price: float
-    selling_price: float
+    mrp_price: float = 0
+    selling_price: float = 0
     tags: List[str] = []
     medias: List[Media] = []
     features: List[str] = []
     active: bool = True
     product_variants: List[ProductVariant] = []
 
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str}
+    }
+
+
+class ProductCreate(BaseModel):
+    name: str
+    brand: str = ""
+    categories: List[str] = []
+    product_description: str = ""
+    mrp_price: float = 0
+    selling_price: float = 0
+    tags: List[str] = []
+    medias: List[Media] = []
+    features: List[str] = []
+    active: bool = True
+    product_variants: List[ProductVariant] = []

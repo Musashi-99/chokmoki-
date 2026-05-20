@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from bson import ObjectId
 from datetime import datetime
@@ -27,6 +27,12 @@ try:
     from src.plugins.logger import logger
     from src.config import settings
     from src.plugins.rate_limit import RateLimitMiddleware
+    from src.services.product_service import ProductService
+    from src.services.category_service import CategoryService
+    from src.models.product import JewelryProductCreate
+    from src.models.category import JewelryCategoryCreate
+    from src.services.admin_auth_service import AdminAuthService
+    from src.services.r2_service import R2Service
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -38,6 +44,12 @@ except Exception as e:
     logger = None
     settings = None
     RateLimitMiddleware = None
+    ProductService = None
+    CategoryService = None
+    JewelryProductCreate = None
+    JewelryCategoryCreate = None
+    AdminAuthService = None
+    R2Service = None
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -64,6 +76,13 @@ async def lifespan(app: FastAPI):
             await db.connect()
         if redis_client:
             await redis_client.connect()
+        # Ensure the R2 media bucket exists for dynamic asset hosting
+        if R2Service is not None:
+            try:
+                R2Service().ensure_bucket()
+            except Exception as r2_err:
+                if logger:
+                    logger.warning(f"R2 bucket check skipped: {r2_err}")
     except Exception as e:
         if logger:
             logger.error(f"Startup connection error: {e}")
@@ -82,7 +101,7 @@ async def lifespan(app: FastAPI):
         print(f"Shutdown connection error: {e}", file=sys.stderr)
 
 
-# ✅ Export THIS ONLY
+# Export THIS ONLY
 app = FastAPI(lifespan=lifespan)
 
 
@@ -97,6 +116,279 @@ app.add_middleware(
 if RateLimitMiddleware:
     app.add_middleware(RateLimitMiddleware)
 
+
+# ========== REST API Endpoints for Frontend ==========
+
+@app.get("/api/products")
+async def api_list_products(
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50,
+):
+    """List products with optional filtering"""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = ProductService()
+    products = await service.list(
+        skip=skip, limit=limit, active=True,
+        category=category, sort=sort, search=search
+    )
+    total = await service.count(active=True, category=category, search=search)
+    
+    return JSONResponse(
+        content=json.loads(json.dumps({
+            "data": products,
+            "count": total
+        }, cls=JSONEncoder))
+    )
+
+
+@app.get("/api/products/{slug}")
+async def api_get_product(slug: str):
+    """Get a single product by slug"""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = ProductService()
+    product = await service.get_by_slug(slug)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return JSONResponse(
+        content=json.loads(json.dumps(
+            product.model_dump(by_alias=True),
+            cls=JSONEncoder
+        ))
+    )
+
+
+@app.get("/api/categories")
+async def api_list_categories():
+    """List all active categories"""
+    if CategoryService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = CategoryService()
+    categories = await service.list(active=True)
+    total = await service.count(active=True)
+    
+    return JSONResponse(
+        content=json.loads(json.dumps({
+            "data": [cat.model_dump(by_alias=True) for cat in categories],
+            "count": total
+        }, cls=JSONEncoder))
+    )
+
+
+@app.get("/api/categories/{slug}")
+async def api_get_category(slug: str):
+    """Get a single category by slug"""
+    if CategoryService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = CategoryService()
+    category = await service.get_by_slug(slug)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    return JSONResponse(
+        content=json.loads(json.dumps(
+            category.model_dump(by_alias=True),
+            cls=JSONEncoder
+        ))
+    )
+
+
+# ========== Admin Panel: Auth, Media Upload & Management ==========
+
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+async def require_admin(authorization: Optional[str] = Header(None)) -> str:
+    """Validate the admin JWT from the 'Authorization: Bearer <token>' header."""
+    if AdminAuthService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing admin token")
+    token = authorization.split(" ", 1)[1].strip()
+    email = AdminAuthService().verify_token(token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired admin token")
+    return email
+
+
+@app.post("/api/admin/login")
+async def admin_login(payload: AdminLoginRequest):
+    """Authenticate the super admin and return a JWT."""
+    if AdminAuthService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    token = await AdminAuthService().authenticate(payload.email, payload.password)
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"token": token, "email": payload.email}
+
+
+@app.get("/api/admin/me")
+async def admin_me(email: str = Depends(require_admin)):
+    """Return the currently authenticated admin (used to verify a stored token)."""
+    return {"email": email}
+
+
+@app.post("/api/admin/upload")
+async def admin_upload(
+    files: List[UploadFile] = File(...),
+    folder: str = Form("products"),
+    email: str = Depends(require_admin),
+):
+    """Upload one or more media files to the Cloudflare R2 'chokmoki' bucket."""
+    if R2Service is None:
+        raise HTTPException(status_code=500, detail="R2 storage not initialized")
+
+    safe_folder = "".join(c for c in folder if c.isalnum() or c in ("-", "_", "/")) or "products"
+    service = R2Service()
+    urls: List[str] = []
+    try:
+        for upload in files:
+            content = await upload.read()
+            url = await service.upload_file(
+                content, upload.filename or "upload.bin", folder=safe_folder
+            )
+            urls.append(url)
+    except Exception as e:
+        if logger:
+            logger.error(f"Admin upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    return {"urls": urls}
+
+
+@app.get("/api/admin/orders")
+async def admin_list_orders(
+    skip: int = 0, limit: int = 50, email: str = Depends(require_admin)
+):
+    """List all orders for the admin dashboard."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = OrderService()
+    orders = await service.list(skip=skip, limit=limit)
+    total = await service.count()
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": [order.model_dump(by_alias=True) for order in orders],
+        "count": total,
+    }, cls=JSONEncoder)))
+
+
+@app.get("/api/admin/products")
+async def admin_list_products(
+    skip: int = 0, limit: int = 200, email: str = Depends(require_admin)
+):
+    """List every product (including inactive) for the admin dashboard."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = ProductService()
+    products = await service.list(skip=skip, limit=limit)
+    total = await service.count()
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": products,
+        "count": total,
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/products")
+async def admin_create_product(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a product. Media URLs should already point to R2 (see /api/admin/upload)."""
+    if ProductService is None or JewelryProductCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        product_data = JewelryProductCreate(**payload)
+        product = await ProductService().create(product_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return JSONResponse(content=json.loads(json.dumps(
+        product.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/products/{product_id}")
+async def admin_delete_product(product_id: str, email: str = Depends(require_admin)):
+    """Delete a product by its MongoDB id."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        deleted = await ProductService().delete(product_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"success": True}
+
+
+@app.get("/api/admin/categories")
+async def admin_list_categories(email: str = Depends(require_admin)):
+    """List every category for the admin dashboard."""
+    if CategoryService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = CategoryService()
+    categories = await service.list(limit=100)
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": [cat.model_dump(by_alias=True) for cat in categories],
+        "count": len(categories),
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/categories")
+async def admin_create_category(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a category."""
+    if CategoryService is None or JewelryCategoryCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        category_data = JewelryCategoryCreate(**payload)
+        category = await CategoryService().create(category_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return JSONResponse(content=json.loads(json.dumps(
+        category.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/categories/{category_id}")
+async def admin_delete_category(category_id: str, email: str = Depends(require_admin)):
+    """Delete a category by its MongoDB id."""
+    if CategoryService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        deleted = await CategoryService().delete(category_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"success": True}
+
+
+# ========== Existing CQRS Endpoint ==========
 
 @app.post("/")
 async def handle_request(request: APIRequest):
@@ -126,6 +418,7 @@ async def handle_request(request: APIRequest):
         if logger:
             logger.error(str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @app.post("/webhook/razorpay")
 async def razorpay_webhook(
@@ -323,8 +616,7 @@ async def health_check():
                 env_info = {
                     "mongodb_db_name": settings.mongodb_db_name,
                     "log_level": settings.log_level,
-                    "has_clerk_secret": bool(settings.clerk_secret_key),
-                    "has_admin_key": bool(settings.admin_key),
+                    "has_admin_login": bool(settings.admin_email and settings.admin_password),
                     "has_redis_url": bool(settings.redis_url),
                 }
             

@@ -1,14 +1,14 @@
 from typing import Dict, Any
 from src.cqrs.base import CommandMutation
 from src.services.category_service import CategoryService
-from src.models.category import CategoryCreate
+from src.models.category import JewelryCategoryCreate
 from src.models.common import MutationResponseDTO
 
 
 class CategoryCreateMutation(CommandMutation):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = CategoryService()
-        category_data = CategoryCreate(**params)
+        category_data = JewelryCategoryCreate(**params)
         category = await service.create(category_data)
         return MutationResponseDTO(data=category.model_dump(by_alias=True)).model_dump()
 
@@ -16,7 +16,7 @@ class CategoryCreateMutation(CommandMutation):
 class CategoryUpdateMutation(CommandMutation):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = CategoryService()
-        category_id = params.pop("id")
+        category_id = params.pop("id", None)
         
         if not category_id:
             raise ValueError("Category ID is required")

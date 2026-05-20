@@ -1,14 +1,14 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from bson import ObjectId
 from src.database.connection import db
-from src.models.category import Category, CategoryCreate
+from src.models.category import JewelryCategory, JewelryCategoryCreate
 from src.plugins.logger import logger
 
 
 class CategoryService:
     COLLECTION_NAME = "categories"
     
-    async def create(self, category_data: CategoryCreate) -> Category:
+    async def create(self, category_data: JewelryCategoryCreate) -> JewelryCategory:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
@@ -17,33 +17,50 @@ class CategoryService:
         category_dict["_id"] = result.inserted_id
         
         logger.info(f"Category created: {result.inserted_id}")
-        return Category(**category_dict)
+        return JewelryCategory(**category_dict)
     
-    async def get_by_id(self, category_id: str) -> Optional[Category]:
+    async def get_by_id(self, category_id: str) -> Optional[JewelryCategory]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
         category = await collection.find_one({"_id": ObjectId(category_id)})
         if category:
-            return Category(**category)
+            return JewelryCategory(**category)
         return None
     
-    async def list(self, skip: int = 0, limit: int = 20) -> List[Category]:
+    async def get_by_slug(self, slug: str) -> Optional[JewelryCategory]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
-        cursor = collection.find({}).skip(skip).limit(limit)
+        category = await collection.find_one({"slug": slug})
+        if category:
+            return JewelryCategory(**category)
+        return None
+    
+    async def list(self, skip: int = 0, limit: int = 20, active: Optional[bool] = None) -> List[JewelryCategory]:
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        query: Dict[str, Any] = {}
+        if active is not None:
+            query["active"] = active
+        
+        cursor = collection.find(query).sort("sort_order", 1).skip(skip).limit(limit)
         categories = await cursor.to_list(length=limit)
         
-        return [Category(**category) for category in categories]
+        return [JewelryCategory(**category) for category in categories]
     
-    async def count(self) -> int:
-        """Count total categories"""
+    async def count(self, active: Optional[bool] = None) -> int:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        return await collection.count_documents({})
+        
+        query: Dict[str, Any] = {}
+        if active is not None:
+            query["active"] = active
+        
+        return await collection.count_documents(query)
     
-    async def update(self, category_id: str, update_data: dict) -> Optional[Category]:
+    async def update(self, category_id: str, update_data: Dict[str, Any]) -> Optional[JewelryCategory]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
@@ -62,4 +79,3 @@ class CategoryService:
         
         result = await collection.delete_one({"_id": ObjectId(category_id)})
         return result.deleted_count > 0
-

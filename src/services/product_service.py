@@ -1,53 +1,51 @@
 from typing import List, Optional, Dict, Any
 from bson import ObjectId
 from src.database.connection import db
-from src.models.product import Product, ProductCreate, ProductVariant, VariantValue
-from src.services.category_service import CategoryService
+from src.models.product import JewelryProduct, JewelryProductCreate
 from src.plugins.logger import logger
 
 
 class ProductService:
     COLLECTION_NAME = "products"
     
-    async def create(self, product_data: ProductCreate) -> Product:
+    async def create(self, product_data: JewelryProductCreate) -> JewelryProduct:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
         product_dict = product_data.model_dump()
-        
-        if not product_dict.get("product_variants"):
-            product_dict["product_variants"] = [
-                ProductVariant(
-                    variant_name="default",
-                    variant_values=[VariantValue(label="default", active=True)]
-                ).model_dump()
-            ]
-        
-        if product_dict.get("categories"):
-            product_dict["categories"] = [ObjectId(cat_id) for cat_id in product_dict["categories"]]
-        
+        product_dict.setdefault("selling_price", product_dict.get("price_inr", 0))
         result = await collection.insert_one(product_dict)
         product_dict["_id"] = result.inserted_id
         
         logger.info(f"Product created: {result.inserted_id}")
-        return Product(**product_dict)
+        return JewelryProduct(**product_dict)
     
-    async def get_by_id(self, product_id: str) -> Optional[Product]:
+    async def get_by_id(self, product_id: str) -> Optional[JewelryProduct]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
         product = await collection.find_one({"_id": ObjectId(product_id)})
         if product:
-            return Product(**product)
+            return JewelryProduct(**product)
+        return None
+    
+    async def get_by_slug(self, slug: str) -> Optional[JewelryProduct]:
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        
+        product = await collection.find_one({"slug": slug})
+        if product:
+            return JewelryProduct(**product)
         return None
     
     async def list(
         self,
         skip: int = 0,
-        limit: int = 20,
+        limit: int = 50,
         active: Optional[bool] = None,
-        category_id: Optional[str] = None,
-        include_categories: bool = True
+        category: Optional[str] = None,
+        sort: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
@@ -55,103 +53,57 @@ class ProductService:
         query: Dict[str, Any] = {}
         if active is not None:
             query["active"] = active
-        if category_id:
-            query["categories"] = ObjectId(category_id)
-        
-        cursor = collection.find(query).skip(skip).limit(limit)
-        products = await cursor.to_list(length=limit)
-        
-        result = []
-        category_service = CategoryService()
-        
-        for product in products:
-            product_dict = Product(**product).model_dump(by_alias=True)
-            
-            if include_categories and product_dict.get("categories"):
-                category_details = []
-                for cat_id in product_dict["categories"]:
-                    category = await category_service.get_by_id(str(cat_id))
-                    if category:
-                        category_details.append(category.model_dump(by_alias=True))
-                product_dict["category_details"] = category_details
-            
-            result.append(product_dict)
-        
-        return result
-    
-    async def search(self, search_term: str, skip: int = 0, limit: int = 20, include_categories: bool = True) -> List[Dict[str, Any]]:
-        database = await db.get_database()
-        collection = database[self.COLLECTION_NAME]
-        
-        query = {
-            "$or": [
-                {"name": {"$regex": search_term, "$options": "i"}},
-                {"brand": {"$regex": search_term, "$options": "i"}},
-                {"tags": {"$in": [search_term]}},
-                {"product_description": {"$regex": search_term, "$options": "i"}}
+        if category:
+            query["category"] = category
+        if search:
+            query["$or"] = [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"description": {"$regex": search, "$options": "i"}},
+                {"material": {"$regex": search, "$options": "i"}},
+                {"slug": {"$regex": search, "$options": "i"}},
             ]
-        }
         
-        cursor = collection.find(query).skip(skip).limit(limit)
+        cursor = collection.find(query)
+        
+        if sort == "low":
+            cursor = cursor.sort("price_inr", 1)
+        elif sort == "high":
+            cursor = cursor.sort("price_inr", -1)
+        else:
+            cursor = cursor.sort("created_at", -1)
+        
+        cursor = cursor.skip(skip).limit(limit)
         products = await cursor.to_list(length=limit)
         
-        result = []
-        category_service = CategoryService()
-        
-        for product in products:
-            product_dict = Product(**product).model_dump(by_alias=True)
-            
-            if include_categories and product_dict.get("categories"):
-                category_details = []
-                for cat_id in product_dict["categories"]:
-                    category = await category_service.get_by_id(str(cat_id))
-                    if category:
-                        category_details.append(category.model_dump(by_alias=True))
-                product_dict["category_details"] = category_details
-            
-            result.append(product_dict)
-        
-        return result
+        return [JewelryProduct(**product).model_dump(by_alias=True) for product in products]
     
     async def count(
         self,
         active: Optional[bool] = None,
-        category_id: Optional[str] = None
+        category: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> int:
-        """Count products matching the given filters"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
         query: Dict[str, Any] = {}
         if active is not None:
             query["active"] = active
-        if category_id:
-            query["categories"] = ObjectId(category_id)
-        
-        return await collection.count_documents(query)
-    
-    async def search_count(self, search_term: str) -> int:
-        """Count products matching the search term"""
-        database = await db.get_database()
-        collection = database[self.COLLECTION_NAME]
-        
-        query = {
-            "$or": [
-                {"name": {"$regex": search_term, "$options": "i"}},
-                {"brand": {"$regex": search_term, "$options": "i"}},
-                {"tags": {"$in": [search_term]}},
-                {"product_description": {"$regex": search_term, "$options": "i"}}
+        if category:
+            query["category"] = category
+        if search:
+            query["$or"] = [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"description": {"$regex": search, "$options": "i"}},
+                {"material": {"$regex": search, "$options": "i"}},
+                {"slug": {"$regex": search, "$options": "i"}},
             ]
-        }
         
         return await collection.count_documents(query)
     
-    async def update(self, product_id: str, update_data: Dict[str, Any]) -> Optional[Product]:
+    async def update(self, product_id: str, update_data: Dict[str, Any]) -> Optional[JewelryProduct]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        
-        if "categories" in update_data and update_data["categories"]:
-            update_data["categories"] = [ObjectId(cat_id) for cat_id in update_data["categories"]]
         
         result = await collection.update_one(
             {"_id": ObjectId(product_id)},
@@ -169,32 +121,11 @@ class ProductService:
         result = await collection.delete_one({"_id": ObjectId(product_id)})
         return result.deleted_count > 0
     
-    async def get_by_ids(self, product_ids: List[str], include_categories: bool = True) -> List[Dict[str, Any]]:
+    async def get_by_slugs(self, slugs: List[str]) -> List[Dict[str, Any]]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
-        object_ids = [ObjectId(pid) for pid in product_ids if ObjectId.is_valid(pid)]
-        if not object_ids:
-            return []
+        cursor = collection.find({"slug": {"$in": slugs}})
+        products = await cursor.to_list(length=len(slugs))
         
-        cursor = collection.find({"_id": {"$in": object_ids}})
-        products = await cursor.to_list(length=len(object_ids))
-        
-        result = []
-        category_service = CategoryService()
-        
-        for product in products:
-            product_dict = Product(**product).model_dump(by_alias=True)
-            
-            if include_categories and product_dict.get("categories"):
-                category_details = []
-                for cat_id in product_dict["categories"]:
-                    category = await category_service.get_by_id(str(cat_id))
-                    if category:
-                        category_details.append(category.model_dump(by_alias=True))
-                product_dict["category_details"] = category_details
-            
-            result.append(product_dict)
-        
-        return result
-
+        return [JewelryProduct(**product).model_dump(by_alias=True) for product in products]

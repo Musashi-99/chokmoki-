@@ -8,13 +8,14 @@ class ProductListQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ProductService()
         skip = params.get("skip", 0)
-        limit = params.get("take") or params.get("limit", 20)
+        limit = params.get("take") or params.get("limit", 50)
         active = params.get("active")
-        category_id = params.get("category_id")
-        include_categories = params.get("include_categories", True)
+        category = params.get("category")
+        sort = params.get("sort")
+        search = params.get("search")
         
-        products = await service.list(skip=skip, limit=limit, active=active, category_id=category_id, include_categories=include_categories)
-        total = await service.count(active=active, category_id=category_id)
+        products = await service.list(skip=skip, limit=limit, active=active, category=category, sort=sort, search=search)
+        total = await service.count(active=active, category=category, search=search)
         return ListResponseDTO(data=products, count=total).model_dump()
 
 
@@ -22,11 +23,15 @@ class ProductGetQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ProductService()
         product_id = params.get("id")
+        slug = params.get("slug")
         
-        if not product_id:
-            raise ValueError("Product ID is required")
+        if slug:
+            product = await service.get_by_slug(slug)
+        elif product_id:
+            product = await service.get_by_id(product_id)
+        else:
+            raise ValueError("Product ID or slug is required")
         
-        product = await service.get_by_id(product_id)
         if not product:
             raise ValueError("Product not found")
         
@@ -36,16 +41,15 @@ class ProductGetQuery(CommandQuery):
 class ProductSearchQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ProductService()
-        search_term = params.get("search_term")
+        search_term = params.get("search_term") or params.get("search")
         skip = params.get("skip", 0)
-        limit = params.get("take") or params.get("limit", 20)
-        include_categories = params.get("include_categories", True)
+        limit = params.get("take") or params.get("limit", 50)
         
         if not search_term:
             raise ValueError("Search term is required")
         
-        products = await service.search(search_term, skip=skip, limit=limit, include_categories=include_categories)
-        total = await service.search_count(search_term)
+        products = await service.list(skip=skip, limit=limit, search=search_term)
+        total = await service.count(search=search_term)
         return ListResponseDTO(data=products, count=total).model_dump()
 
 
@@ -53,13 +57,22 @@ class ProductGetByIdsQuery(CommandQuery):
     async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         service = ProductService()
         product_ids = params.get("ids", [])
-        include_categories = params.get("include_categories", True)
+        slugs = params.get("slugs", [])
+        
+        if slugs:
+            products = await service.get_by_slugs(slugs)
+            return ListResponseDTO(data=products, count=len(products)).model_dump()
         
         if not product_ids:
-            raise ValueError("Product IDs are required")
+            raise ValueError("Product IDs or slugs are required")
         
         if not isinstance(product_ids, list):
             raise ValueError("Product IDs must be a list")
         
-        products = await service.get_by_ids(product_ids, include_categories=include_categories)
+        products = []
+        for pid in product_ids:
+            product = await service.get_by_id(pid)
+            if product:
+                products.append(product.model_dump(by_alias=True))
+        
         return ListResponseDTO(data=products, count=len(products)).model_dump()

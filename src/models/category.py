@@ -1,20 +1,18 @@
-from typing import Optional, Literal
+from typing import Optional
 from pydantic import BaseModel, Field
 from bson import ObjectId
-from src.models.product import PyObjectId, Media
+from src.models.product import PyObjectId
 
 
-class Discount(BaseModel):
-    rate: float = 0
-    type: Literal["percentage", "direct"] = "percentage"
-
-
-class Category(BaseModel):
+class JewelryCategory(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    slug: str
     name: str
-    medias: list[Media] = []
+    tagline: str = ""
+    banner: str = ""
     description: str = ""
-    discount: Discount = Field(default_factory=lambda: Discount())
+    sort_order: int = 0
+    active: bool = True
     
     model_config = {
         "populate_by_name": True,
@@ -23,9 +21,11 @@ class Category(BaseModel):
     }
 
 
-class CategoryCreate(BaseModel):
+class JewelryCategoryCreate(BaseModel):
+    slug: str
     name: str
-    medias: list[Media] = []
+    tagline: str = ""
+    banner: str = ""
     description: str = ""
-    discount: Discount = Field(default_factory=lambda: Discount())
-
+    sort_order: int = 0
+    active: bool = True
