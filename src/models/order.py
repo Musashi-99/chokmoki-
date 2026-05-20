@@ -7,17 +7,17 @@ from src.models.shipping_address import ShippingAddress as ShippingAddressModel
 
 
 class ShippingAddress(BaseModel):
-    _id: str
+    _id: Optional[str] = None
     email: str
     full_name: str
     phone: str
     address_line1: str
     address_line2: Optional[str] = ""
     city: str
-    state: str
+    state: Optional[str] = ""
     postal_code: str
     country: str
-    is_default: bool
+    is_default: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -29,6 +29,7 @@ class OrderItemInput(BaseModel):
     quantity: int
     price: float
     total: float
+    size: Optional[str] = None
 
 
 class OrderPricingInput(BaseModel):
@@ -55,6 +56,7 @@ class ValidatedOrderItem(BaseModel):
     quantity: int
     unit_price: float
     total_price: float
+    size: Optional[str] = None
 
 
 class OrderStatusExtras(BaseModel):

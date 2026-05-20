@@ -247,7 +247,8 @@ class OrderService:
                 variant=item.variant,
                 quantity=item.quantity,
                 unit_price=unit_price,
-                total_price=total_price
+                total_price=total_price,
+                size=item.size
             ))
         
         pricing = self._recalculate_pricing(validated_items)

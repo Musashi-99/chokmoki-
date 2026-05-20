@@ -31,6 +31,7 @@ try:
     from src.services.category_service import CategoryService
     from src.models.product import JewelryProductCreate
     from src.models.category import JewelryCategoryCreate
+    from src.models.order import OrderCreateInput
     from src.services.admin_auth_service import AdminAuthService
     from src.services.r2_service import R2Service
 except Exception as e:
@@ -48,6 +49,7 @@ except Exception as e:
     CategoryService = None
     JewelryProductCreate = None
     JewelryCategoryCreate = None
+    OrderCreateInput = None
     AdminAuthService = None
     R2Service = None
 
@@ -202,6 +204,33 @@ async def api_get_category(slug: str):
     )
 
 
+@app.post("/api/orders")
+async def api_create_order(payload: Dict[str, Any]):
+    """Create a new order (public endpoint)."""
+    if OrderService is None or OrderCreateInput is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        order_data = OrderCreateInput(**payload)
+        service = OrderService()
+        order = await service.create(order_data)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if logger:
+            logger.error(f"Order creation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+    return JSONResponse(
+        content=json.loads(json.dumps(
+            order.model_dump(by_alias=True),
+            cls=JSONEncoder
+        ))
+    )
+
+
 # ========== Admin Panel: Auth, Media Upload & Management ==========
 
 class AdminLoginRequest(BaseModel):
@@ -323,6 +352,25 @@ async def admin_create_product(
     )))
 
 
+@app.put("/api/admin/products/{product_id}")
+async def admin_update_product(
+    product_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a product by its MongoDB id."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        updated = await ProductService().update(product_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
 @app.delete("/api/admin/products/{product_id}")
 async def admin_delete_product(product_id: str, email: str = Depends(require_admin)):
     """Delete a product by its MongoDB id."""
@@ -370,6 +418,25 @@ async def admin_create_category(
 
     return JSONResponse(content=json.loads(json.dumps(
         category.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/categories/{category_id}")
+async def admin_update_category(
+    category_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a category by its MongoDB id."""
+    if CategoryService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        updated = await CategoryService().update(category_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
 
 
