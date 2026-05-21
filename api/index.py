@@ -34,6 +34,17 @@ try:
     from src.models.order import OrderCreateInput, OrderStatus
     from src.services.admin_auth_service import AdminAuthService
     from src.services.r2_service import R2Service
+    from src.models.testimonial import TestimonialCreate
+    from src.models.hero_config import HeroConfigCreate
+    from src.services.testimonial_service import TestimonialService
+    from src.services.hero_config_service import HeroConfigService
+    from src.models.site_asset import SiteAssetCreate
+    from src.models.faq_item import FAQItemCreate
+    from src.models.collection_slide import CollectionSlideCreate
+    from src.services.site_asset_service import SiteAssetService
+    from src.services.faq_item_service import FAQItemService
+    from src.services.collection_slide_service import CollectionSlideService
+    from src.services.cache_service import cache
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -52,6 +63,17 @@ except Exception as e:
     OrderCreateInput = None
     AdminAuthService = None
     R2Service = None
+    TestimonialCreate = None
+    HeroConfigCreate = None
+    TestimonialService = None
+    HeroConfigService = None
+    SiteAssetCreate = None
+    FAQItemCreate = None
+    CollectionSlideCreate = None
+    SiteAssetService = None
+    FAQItemService = None
+    CollectionSlideService = None
+    cache = None
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -61,6 +83,14 @@ class JSONEncoder(json.JSONEncoder):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
+
+
+def _json_dumps(obj: Any) -> str:
+    return json.dumps(obj, cls=JSONEncoder)
+
+
+def _json_response_content(obj: Any) -> Any:
+    return json.loads(_json_dumps(obj))
 
 
 class APIRequest(BaseModel):
@@ -121,6 +151,10 @@ if RateLimitMiddleware:
 
 # ========== REST API Endpoints for Frontend ==========
 
+async def _cache_products_key(category, search, sort, skip, limit):
+    return f"chokmoki:products:{category or 'all'}:{search or 'all'}:{sort or 'default'}:{skip}:{limit}"
+
+
 @app.get("/api/products")
 async def api_list_products(
     category: Optional[str] = None,
@@ -129,9 +163,15 @@ async def api_list_products(
     skip: int = 0,
     limit: int = 50,
 ):
-    """List products with optional filtering"""
+    """List products with optional filtering (cached)"""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    cache_key = await _cache_products_key(category, search, sort, skip, limit)
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
     
     service = ProductService()
     products = await service.list(
@@ -139,13 +179,12 @@ async def api_list_products(
         category=category, sort=sort, search=search
     )
     total = await service.count(active=True, category=category, search=search)
+    result = {"data": products, "count": total}
     
-    return JSONResponse(
-        content=json.loads(json.dumps({
-            "data": products,
-            "count": total
-        }, cls=JSONEncoder))
-    )
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+    
+    return JSONResponse(content=_json_response_content(result))
 
 
 @app.get("/api/products/{slug}")
@@ -154,35 +193,51 @@ async def api_get_product(slug: str):
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
+    cache_key = f"chokmoki:product:{slug}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+    
     service = ProductService()
     product = await service.get_by_slug(slug)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    return JSONResponse(
-        content=json.loads(json.dumps(
-            product.model_dump(by_alias=True),
-            cls=JSONEncoder
-        ))
-    )
+    result = json.loads(json.dumps(
+        product.model_dump(by_alias=True),
+        cls=JSONEncoder
+    ))
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+    
+    return JSONResponse(content=result)
 
 
 @app.get("/api/categories")
 async def api_list_categories():
-    """List all active categories"""
+    """List all active categories (cached)"""
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    cache_key = "chokmoki:categories"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
     
     service = CategoryService()
     categories = await service.list(active=True)
     total = await service.count(active=True)
+    result = {
+        "data": [cat.model_dump(by_alias=True) for cat in categories],
+        "count": total
+    }
     
-    return JSONResponse(
-        content=json.loads(json.dumps({
-            "data": [cat.model_dump(by_alias=True) for cat in categories],
-            "count": total
-        }, cls=JSONEncoder))
-    )
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+    
+    return JSONResponse(content=_json_response_content(result))
 
 
 @app.get("/api/categories/{slug}")
@@ -447,6 +502,10 @@ async def admin_create_product(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if cache:
+        await cache.delete_pattern("chokmoki:products:*")
+        await cache.delete_pattern("chokmoki:product:*")
+
     return JSONResponse(content=json.loads(json.dumps(
         product.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -466,6 +525,11 @@ async def admin_update_product(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    if cache:
+        await cache.delete_pattern("chokmoki:products:*")
+        await cache.delete_pattern("chokmoki:product:*")
+
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -483,6 +547,11 @@ async def admin_delete_product(product_id: str, email: str = Depends(require_adm
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    if cache:
+        await cache.delete_pattern("chokmoki:products:*")
+        await cache.delete_pattern("chokmoki:product:*")
+
     return {"success": True}
 
 
@@ -516,6 +585,9 @@ async def admin_create_category(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if cache:
+        await cache.delete("chokmoki:categories")
+
     return JSONResponse(content=json.loads(json.dumps(
         category.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -535,6 +607,10 @@ async def admin_update_category(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Category not found")
+
+    if cache:
+        await cache.delete("chokmoki:categories")
+
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -552,6 +628,456 @@ async def admin_delete_category(category_id: str, email: str = Depends(require_a
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Category not found")
+
+    if cache:
+        await cache.delete("chokmoki:categories")
+
+    return {"success": True}
+
+
+# ========== Public Dynamic Content Endpoints ==========
+
+@app.get("/api/testimonials")
+async def api_list_testimonials():
+    """List all active testimonials."""
+    if TestimonialService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = TestimonialService()
+    testimonials = await service.list(active=True)
+    total = await service.count(active=True)
+    
+    return JSONResponse(content=_json_response_content({"data": testimonials, "count": total}))
+
+
+@app.get("/api/hero")
+async def api_get_hero_config():
+    """Get the active hero configuration."""
+    if HeroConfigService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = HeroConfigService()
+    config = await service.get_active()
+    if not config:
+        return JSONResponse(content={"media_type": None, "media_url": None, "alt_text": None, "active": False})
+    
+    return JSONResponse(content=_json_response_content(config.model_dump(by_alias=True)))
+
+
+# ========== Admin: Testimonials ==========
+
+@app.get("/api/admin/testimonials")
+async def admin_list_testimonials(email: str = Depends(require_admin)):
+    """List all testimonials for admin."""
+    if TestimonialService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = TestimonialService()
+    testimonials = await service.list(limit=100)
+    total = await service.count()
+    
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": testimonials,
+        "count": total,
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/testimonials")
+async def admin_create_testimonial(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a testimonial."""
+    if TestimonialService is None or TestimonialCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        data = TestimonialCreate(**payload)
+        testimonial = await TestimonialService().create(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return JSONResponse(content=json.loads(json.dumps(
+        testimonial.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/testimonials/{testimonial_id}")
+async def admin_update_testimonial(
+    testimonial_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a testimonial by its MongoDB id."""
+    if TestimonialService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        updated = await TestimonialService().update(testimonial_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Testimonial not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/testimonials/{testimonial_id}")
+async def admin_delete_testimonial(testimonial_id: str, email: str = Depends(require_admin)):
+    """Delete a testimonial by its MongoDB id."""
+    if TestimonialService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        deleted = await TestimonialService().delete(testimonial_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Testimonial not found")
+    return {"success": True}
+
+
+# ========== Admin: Hero Config ==========
+
+@app.get("/api/admin/hero")
+async def admin_list_hero_configs(email: str = Depends(require_admin)):
+    """List all hero configs for admin."""
+    if HeroConfigService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = HeroConfigService()
+    configs = await service.list()
+    total = await service.count()
+    
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": configs,
+        "count": total,
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/hero")
+async def admin_create_hero_config(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a hero config."""
+    if HeroConfigService is None or HeroConfigCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        data = HeroConfigCreate(**payload)
+        config = await HeroConfigService().create(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return JSONResponse(content=json.loads(json.dumps(
+        config.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/hero/{config_id}")
+async def admin_update_hero_config(
+    config_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a hero config by its MongoDB id."""
+    if HeroConfigService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        updated = await HeroConfigService().update(config_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Hero config not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/hero/{config_id}")
+async def admin_delete_hero_config(config_id: str, email: str = Depends(require_admin)):
+    """Delete a hero config by its MongoDB id."""
+    if HeroConfigService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        deleted = await HeroConfigService().delete(config_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Hero config not found")
+    return {"success": True}
+
+
+# ========== Public: Site Assets ==========
+
+@app.get("/api/site-assets")
+async def api_list_site_assets():
+    """List all active site assets."""
+    if SiteAssetService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = SiteAssetService()
+    assets = await service.list(active=True)
+    return JSONResponse(content=_json_response_content({"data": assets, "count": len(assets)}))
+
+
+@app.get("/api/site-assets/{key}")
+async def api_get_site_asset(key: str):
+    """Get a single active site asset by key."""
+    if SiteAssetService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = SiteAssetService()
+    asset = await service.get_by_key(key)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    return JSONResponse(
+        content=json.loads(json.dumps(
+            asset.model_dump(by_alias=True),
+            cls=JSONEncoder
+        ))
+    )
+
+
+# ========== Public: FAQ ==========
+
+@app.get("/api/faq")
+async def api_list_faq(scope: Optional[str] = None):
+    """List active FAQ items, optionally filtered by scope."""
+    if FAQItemService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = FAQItemService()
+    items = await service.list(scope=scope, active=True)
+    return JSONResponse(content=_json_response_content({"data": items, "count": len(items)}))
+
+
+# ========== Public: Collection Slides ==========
+
+@app.get("/api/collection-slides")
+async def api_list_collection_slides():
+    """List all active collection slides."""
+    if CollectionSlideService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = CollectionSlideService()
+    slides = await service.list(active=True)
+    return JSONResponse(content=_json_response_content({"data": slides, "count": len(slides)}))
+
+
+# ========== Admin: Site Assets ==========
+
+@app.get("/api/admin/site-assets")
+async def admin_list_site_assets(email: str = Depends(require_admin)):
+    """List all site assets for admin."""
+    if SiteAssetService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = SiteAssetService()
+    assets = await service.list()
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": assets,
+        "count": len(assets),
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/site-assets")
+async def admin_create_site_asset(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a site asset."""
+    if SiteAssetService is None or SiteAssetCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        data = SiteAssetCreate(**payload)
+        asset = await SiteAssetService().create(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return JSONResponse(content=json.loads(json.dumps(
+        asset.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/site-assets/{asset_id}")
+async def admin_update_site_asset(
+    asset_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a site asset by its MongoDB id."""
+    if SiteAssetService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        updated = await SiteAssetService().update(asset_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Site asset not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/site-assets/{asset_id}")
+async def admin_delete_site_asset(asset_id: str, email: str = Depends(require_admin)):
+    """Delete a site asset by its MongoDB id."""
+    if SiteAssetService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        deleted = await SiteAssetService().delete(asset_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Site asset not found")
+    return {"success": True}
+
+
+# ========== Admin: FAQ ==========
+
+@app.get("/api/admin/faq")
+async def admin_list_faq_items(email: str = Depends(require_admin)):
+    """List all FAQ items for admin."""
+    if FAQItemService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = FAQItemService()
+    items = await service.list()
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": items,
+        "count": len(items),
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/faq")
+async def admin_create_faq_item(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a FAQ item."""
+    if FAQItemService is None or FAQItemCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        data = FAQItemCreate(**payload)
+        item = await FAQItemService().create(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return JSONResponse(content=json.loads(json.dumps(
+        item.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/faq/{faq_id}")
+async def admin_update_faq_item(
+    faq_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a FAQ item by its MongoDB id."""
+    if FAQItemService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        updated = await FAQItemService().update(faq_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="FAQ item not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/faq/{faq_id}")
+async def admin_delete_faq_item(faq_id: str, email: str = Depends(require_admin)):
+    """Delete a FAQ item by its MongoDB id."""
+    if FAQItemService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        deleted = await FAQItemService().delete(faq_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="FAQ item not found")
+    return {"success": True}
+
+
+# ========== Admin: Collection Slides ==========
+
+@app.get("/api/admin/collection-slides")
+async def admin_list_collection_slides(email: str = Depends(require_admin)):
+    """List all collection slides for admin."""
+    if CollectionSlideService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    service = CollectionSlideService()
+    slides = await service.list()
+    return JSONResponse(content=json.loads(json.dumps({
+        "data": slides,
+        "count": len(slides),
+    }, cls=JSONEncoder)))
+
+
+@app.post("/api/admin/collection-slides")
+async def admin_create_collection_slide(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create a collection slide."""
+    if CollectionSlideService is None or CollectionSlideCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        data = CollectionSlideCreate(**payload)
+        slide = await CollectionSlideService().create(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return JSONResponse(content=json.loads(json.dumps(
+        slide.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/collection-slides/{slide_id}")
+async def admin_update_collection_slide(
+    slide_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update a collection slide by its MongoDB id."""
+    if CollectionSlideService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        updated = await CollectionSlideService().update(slide_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Collection slide not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/collection-slides/{slide_id}")
+async def admin_delete_collection_slide(slide_id: str, email: str = Depends(require_admin)):
+    """Delete a collection slide by its MongoDB id."""
+    if CollectionSlideService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    
+    try:
+        deleted = await CollectionSlideService().delete(slide_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Collection slide not found")
     return {"success": True}
 
 

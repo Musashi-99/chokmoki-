@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 from bson import ObjectId
 from src.database.connection import db
 from src.models.product import JewelryProduct, JewelryProductCreate
@@ -13,6 +14,7 @@ class ProductService:
         collection = database[self.COLLECTION_NAME]
         
         product_dict = product_data.model_dump()
+        product_dict["created_at"] = datetime.utcnow()
         result = await collection.insert_one(product_dict)
         product_dict["_id"] = result.inserted_id
         
