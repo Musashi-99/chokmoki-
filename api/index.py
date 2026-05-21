@@ -31,7 +31,7 @@ try:
     from src.services.category_service import CategoryService
     from src.models.product import JewelryProductCreate
     from src.models.category import JewelryCategoryCreate
-    from src.models.order import OrderCreateInput
+    from src.models.order import OrderCreateInput, OrderStatus
     from src.services.admin_auth_service import AdminAuthService
     from src.services.r2_service import R2Service
 except Exception as e:
@@ -299,32 +299,132 @@ async def admin_upload(
 
 @app.get("/api/admin/orders")
 async def admin_list_orders(
-    skip: int = 0, limit: int = 50, email: str = Depends(require_admin)
+    skip: int = 0,
+    limit: int = 50,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    email: str = Depends(require_admin),
 ):
-    """List all orders for the admin dashboard."""
+    """List all orders for the admin dashboard with optional filtering."""
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     service = OrderService()
-    orders = await service.list(skip=skip, limit=limit)
-    total = await service.count()
+    orders = await service.list(
+        skip=skip, limit=limit,
+        status=status, search=search,
+        from_date=from_date, to_date=to_date,
+    )
+    total = await service.count(
+        status=status, search=search,
+        from_date=from_date, to_date=to_date,
+    )
     return JSONResponse(content=json.loads(json.dumps({
         "data": [order.model_dump(by_alias=True) for order in orders],
         "count": total,
     }, cls=JSONEncoder)))
 
 
+@app.put("/api/admin/orders/{order_id}/status")
+async def admin_update_order_status(
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Update an order's status by order_id."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        status = OrderStatus(**payload.get("status", {}))
+        service = OrderService()
+        updated = await service.update_status(order_id, status)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/orders/{order_id}")
+async def admin_get_order(order_id: str, email: str = Depends(require_admin)):
+    """Get a single order by order_id."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = OrderService()
+    order = await service.get_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        order.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/stats")
+async def admin_get_stats(email: str = Depends(require_admin)):
+    """Dashboard overview stats: order counts, revenue, product count."""
+    if OrderService is None or ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    database = await db.get_database()
+
+    orders_collection = database["orders"]
+    products_collection = database["products"]
+
+    total_orders = await orders_collection.count_documents({})
+
+    revenue_pipeline = [
+        {"$match": {"status.type": {"$nin": ["rejected", "rejected_by_user"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}},
+    ]
+    revenue_result = await orders_collection.aggregate(revenue_pipeline).to_list(1)
+    total_revenue = revenue_result[0]["total"] if revenue_result else 0
+
+    status_pipeline = [
+        {"$group": {"_id": "$status.type", "count": {"$sum": 1}}},
+    ]
+    status_result = await orders_collection.aggregate(status_pipeline).to_list(100)
+    status_counts = {item["_id"]: item["count"] for item in status_result if item["_id"]}
+
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    orders_today = await orders_collection.count_documents({"created_at": {"$gte": today_start}})
+
+    total_products = await products_collection.count_documents({})
+    active_products = await products_collection.count_documents({"active": True})
+
+    return JSONResponse(content=json.loads(json.dumps({
+        "totalOrders": total_orders,
+        "totalRevenue": total_revenue,
+        "ordersToday": orders_today,
+        "statusCounts": status_counts,
+        "totalProducts": total_products,
+        "activeProducts": active_products,
+    }, cls=JSONEncoder)))
+
+
 @app.get("/api/admin/products")
 async def admin_list_products(
-    skip: int = 0, limit: int = 200, email: str = Depends(require_admin)
+    skip: int = 0,
+    limit: int = 200,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    active: Optional[bool] = None,
+    email: str = Depends(require_admin),
 ):
     """List every product (including inactive) for the admin dashboard."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     service = ProductService()
-    products = await service.list(skip=skip, limit=limit)
-    total = await service.count()
+    products = await service.list(
+        skip=skip, limit=limit, active=active,
+        category=category, search=search,
+    )
+    total = await service.count(active=active, category=category, search=search)
     return JSONResponse(content=json.loads(json.dumps({
         "data": products,
         "count": total,

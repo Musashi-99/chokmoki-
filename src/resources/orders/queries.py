@@ -10,9 +10,21 @@ class OrderListQuery(CommandQuery):
         skip = params.get("skip", 0)
         limit = params.get("limit", 20)
         user_email = params.get("userEmail")
+        status = params.get("status")
+        search = params.get("search")
+        from_date = params.get("fromDate")
+        to_date = params.get("toDate")
+        sort_order = params.get("sortOrder", -1)
         
-        orders = await service.list(skip=skip, limit=limit, user_email=user_email)
-        total = await service.count(user_email=user_email)
+        orders = await service.list(
+            skip=skip, limit=limit, user_email=user_email,
+            status=status, search=search,
+            from_date=from_date, to_date=to_date, sort_order=sort_order
+        )
+        total = await service.count(
+            user_email=user_email, status=status,
+            search=search, from_date=from_date, to_date=to_date
+        )
         return ListResponseDTO(
             data=[order.model_dump(by_alias=True) for order in orders],
             count=total

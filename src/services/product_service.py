@@ -13,7 +13,6 @@ class ProductService:
         collection = database[self.COLLECTION_NAME]
         
         product_dict = product_data.model_dump()
-        product_dict.setdefault("selling_price", product_dict.get("price_inr", 0))
         result = await collection.insert_one(product_dict)
         product_dict["_id"] = result.inserted_id
         

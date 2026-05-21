@@ -161,37 +161,77 @@ class OrderService:
             return Order(**order_dict)
         return None
     
-    async def list(self, skip: int = 0, limit: int = 20, user_email: Optional[str] = None) -> List[Order]:
-        """List orders, optionally filtered by user email"""
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        user_email: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        sort_order: int = -1,
+    ) -> List[Order]:
+        """List orders with optional filtering, search, and date range"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        
-        query = {}
-        if user_email:
-            query["user_email"] = user_email
-        
-        cursor = collection.find(query).sort("created_at", -1).skip(skip).limit(limit)
+
+        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        cursor = collection.find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         orders_dict = await cursor.to_list(length=limit)
-        
+
         orders = []
         for order_dict in orders_dict:
-            # Convert shipping_address dict to DTO
             if isinstance(order_dict.get("shipping_address"), dict):
                 order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
             orders.append(Order(**order_dict))
-        
+
         return orders
-    
-    async def count(self, user_email: Optional[str] = None) -> int:
+
+    async def count(
+        self,
+        user_email: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+    ) -> int:
         """Count orders matching the given filters"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        
-        query = {}
+
+        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        return await collection.count_documents(query)
+
+    def _build_order_query(
+        self,
+        user_email: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+    ) -> dict:
+        query: dict = {}
         if user_email:
             query["user_email"] = user_email
-        
-        return await collection.count_documents(query)
+        if status:
+            query["status.type"] = status
+        if search:
+            query["$or"] = [
+                {"order_id": {"$regex": search, "$options": "i"}},
+                {"user_email": {"$regex": search, "$options": "i"}},
+                {"shipping_address.full_name": {"$regex": search, "$options": "i"}},
+                {"shipping_address.phone": {"$regex": search, "$options": "i"}},
+            ]
+        if from_date or to_date:
+            date_filter: dict = {}
+            if from_date:
+                date_filter["$gte"] = datetime.fromisoformat(from_date)
+            if to_date:
+                date_filter["$lte"] = datetime.fromisoformat(to_date)
+            if date_filter:
+                query["created_at"] = date_filter
+        return query
     
     async def get_order_log(self, order_id: str) -> Optional[OrderLogDTO]:
         """Get raw order log for debugging"""
@@ -238,7 +278,7 @@ class OrderService:
             if not self._validate_variant(product, item.variant):
                 raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
             
-            unit_price = product.selling_price
+            unit_price = float(product.price_inr)
             total_price = unit_price * item.quantity
             
             validated_items.append(ValidatedOrderItem(
