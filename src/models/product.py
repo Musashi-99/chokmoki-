@@ -54,6 +54,10 @@ class JewelryProduct(BaseModel):
     gallery: List[str] = []
     material: str = ""
     craftsmanship: str = ""
+    shipping_details: str = ""
+    care_guide: str = ""
+    returns_policy: str = ""
+    authenticity_details: str = ""
     description: str = ""
     story: Optional[str] = None
     sizes: List[str] = []
@@ -85,6 +89,10 @@ class JewelryProductCreate(BaseModel):
     gallery: List[str] = []
     material: str = ""
     craftsmanship: str = ""
+    shipping_details: str = ""
+    care_guide: str = ""
+    returns_policy: str = ""
+    authenticity_details: str = ""
     description: str = ""
     story: Optional[str] = None
     sizes: List[str] = []
