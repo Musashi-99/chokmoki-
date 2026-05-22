@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
 import sys
 import platform
@@ -34,6 +34,7 @@ try:
     from src.models.order import OrderCreateInput, OrderStatus
     from src.services.admin_auth_service import AdminAuthService
     from src.services.r2_service import R2Service
+    from src.utils.upload_validation import UploadValidationError, validate_upload
     from src.models.testimonial import TestimonialCreate
     from src.models.hero_config import HeroConfigCreate
     from src.services.testimonial_service import TestimonialService
@@ -128,7 +129,9 @@ class JSONEncoder(json.JSONEncoder):
         if isinstance(obj, ObjectId):
             return str(obj)
         if isinstance(obj, datetime):
-            return obj.isoformat()
+            # Mongo stores naive UTC; suffix Z so clients bucket IST correctly.
+            s = obj.isoformat()
+            return s if obj.tzinfo is not None else f"{s}Z"
         return super().default(obj)
 
 
@@ -153,6 +156,12 @@ async def lifespan(app: FastAPI):
     try:
         if db:
             await db.connect()
+            if OrderService is not None:
+                try:
+                    await OrderService().ensure_indexes()
+                except Exception as idx_err:
+                    if logger:
+                        logger.warning(f"Order index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting
@@ -398,10 +407,21 @@ async def admin_upload(
     try:
         for upload in files:
             content = await upload.read()
+            try:
+                extension, content_type = validate_upload(
+                    content, upload.filename or "upload.bin"
+                )
+            except UploadValidationError as ve:
+                raise HTTPException(status_code=400, detail=str(ve)) from ve
             url = await service.upload_file(
-                content, upload.filename or "upload.bin", folder=safe_folder
+                content,
+                extension=extension,
+                content_type=content_type,
+                folder=safe_folder,
             )
             urls.append(url)
+    except HTTPException:
+        raise
     except Exception as e:
         if logger:
             logger.error(f"Admin upload failed: {e}")
@@ -503,7 +523,11 @@ async def admin_get_stats(email: str = Depends(require_admin)):
     status_result = await orders_collection.aggregate(status_pipeline).to_list(100)
     status_counts = {item["_id"]: item["count"] for item in status_result if item["_id"]}
 
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    # Align "today" with store timezone (IST) — Mongo stores naive UTC datetimes.
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = today_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
     orders_today = await orders_collection.count_documents({"created_at": {"$gte": today_start}})
 
     total_products = await products_collection.count_documents({})
@@ -1748,59 +1772,34 @@ async def razorpay_webhook(
                 return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
             
             order_service = OrderService()
-            database = await db.get_database()
-            orders_collection = database[order_service.COLLECTION_NAME]
-            
-            existing_order = await orders_collection.find_one({"order_id": order_id})
-            if existing_order:
-                logger.info(f"Order {order_id} already exists in MongoDB, skipping duplicate webhook processing")
-                redis = await redis_client.get_client()
-                redis_key = f"pending_order:{order_id}"
-                await redis.delete(redis_key)
-                return JSONResponse(content={"status": "success", "order_id": order_id, "message": "already_processed"})
-            
-            redis = await redis_client.get_client()
-            redis_key = f"pending_order:{order_id}"
-            
-            order_json = await redis.get(redis_key)
-            if not order_json:
-                logger.warning(f"Order {order_id} not found in Redis, may already be processed")
-                return JSONResponse(content={"status": "ignored", "reason": "order_not_found"})
-            
-            order_dict = json.loads(order_json)
-            order_dict["payment_status"] = "completed"
-            order_dict["razorpay_order_id"] = razorpay_order_id
-            order_dict["razorpay_payment_id"] = razorpay_payment_id
-            order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
-            
-            logs_collection = database[order_service.ORDER_LOGS_COLLECTION]
-            
             try:
-                result = await orders_collection.insert_one(order_dict)
-                order_dict["_id"] = result.inserted_id
-                
-                await logs_collection.insert_one({
-                    "order_id": order_id,
-                    "raw_data": order_dict.get("raw_order_log", {}),
-                    "created_at": datetime.utcnow()
-                })
-                
-                # Push to Telegram queue (non-blocking, best-effort)
-                if TelegramService:
-                    telegram_service = TelegramService()
-                    try:
-                        await telegram_service.push_order_to_queue(order_dict)
-                    except Exception as e:
-                        if logger:
-                            logger.warning(f"Failed to push order to Telegram queue: {e}")
-                
-                await redis.delete(redis_key)
-                logger.info(f"Webhook processed: Order {order_id} moved from Redis to MongoDB")
-                return JSONResponse(content={"status": "success", "order_id": order_id})
+                _order, completion_status = await order_service.complete_pending_order(
+                    order_id, razorpay_order_id, razorpay_payment_id
+                )
+                if completion_status == "not_found":
+                    logger.warning(
+                        f"Order {order_id} not found in Redis, may already be processed"
+                    )
+                    return JSONResponse(
+                        content={"status": "ignored", "reason": "order_not_found"}
+                    )
+                message = (
+                    "already_processed"
+                    if completion_status == "existing"
+                    else "created"
+                )
+                return JSONResponse(
+                    content={
+                        "status": "success",
+                        "order_id": order_id,
+                        "message": message,
+                    }
+                )
             except Exception as e:
                 logger.error(f"Failed to process webhook for order {order_id}: {e}")
-                await redis.delete(redis_key)
-                raise HTTPException(status_code=500, detail=f"Failed to process order: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to process order: {str(e)}"
+                )
         
         logger.info(f"Webhook event {event} received but not processed")
         return JSONResponse(content={"status": "ignored", "event": event})

@@ -24,6 +24,98 @@ except ImportError:
 class OrderService:
     COLLECTION_NAME = "orders"
     ORDER_LOGS_COLLECTION = "order_logs"
+
+    async def ensure_indexes(self) -> None:
+        """Unique order_id prevents duplicate inserts under concurrent webhooks."""
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+        await orders_collection.create_index("order_id", unique=True)
+        await logs_collection.create_index("order_id", unique=True)
+
+    def _order_from_doc(self, order_doc: dict) -> Order:
+        if isinstance(order_doc.get("shipping_address"), dict):
+            order_doc = {**order_doc}
+            order_doc["shipping_address"] = ShippingAddressInOrder(
+                **order_doc["shipping_address"]
+            )
+        return Order(**order_doc)
+
+    async def _clear_pending_redis(self, order_id: str) -> None:
+        redis = await redis_client.get_client()
+        await redis.delete(f"pending_order:{order_id}")
+
+    async def complete_pending_order(
+        self,
+        order_id: str,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+    ) -> tuple[Optional[Order], str]:
+        """
+        Atomically persist a paid order from Redis to MongoDB.
+        Returns (order, status) where status is 'created', 'existing', or 'not_found'.
+        """
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+
+        existing = await orders_collection.find_one({"order_id": order_id})
+        if existing:
+            await self._clear_pending_redis(order_id)
+            return self._order_from_doc(existing), "existing"
+
+        redis = await redis_client.get_client()
+        redis_key = f"pending_order:{order_id}"
+        order_json = await redis.get(redis_key)
+        if not order_json:
+            existing = await orders_collection.find_one({"order_id": order_id})
+            if existing:
+                return self._order_from_doc(existing), "existing"
+            return None, "not_found"
+
+        order_dict = json.loads(order_json)
+        order_dict["payment_status"] = "completed"
+        order_dict["razorpay_order_id"] = razorpay_order_id
+        order_dict["razorpay_payment_id"] = razorpay_payment_id
+        order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
+        order_dict.pop("_id", None)
+
+        result = await orders_collection.update_one(
+            {"order_id": order_id},
+            {"$setOnInsert": order_dict},
+            upsert=True,
+        )
+        created = result.upserted_id is not None
+
+        saved = await orders_collection.find_one({"order_id": order_id})
+        if not saved:
+            return None, "not_found"
+
+        if created:
+            log_dict = {
+                "order_id": order_id,
+                "raw_data": order_dict.get("raw_order_log", {}),
+                "created_at": datetime.utcnow(),
+            }
+            await logs_collection.update_one(
+                {"order_id": order_id},
+                {"$setOnInsert": log_dict},
+                upsert=True,
+            )
+            if TelegramService:
+                telegram_service = TelegramService()
+                try:
+                    await telegram_service.push_order_to_queue(saved)
+                except Exception as e:
+                    logger.warning(f"Failed to push order to Telegram queue: {e}")
+
+        await self._clear_pending_redis(order_id)
+        status = "created" if created else "existing"
+        if status == "created":
+            logger.info(f"Order {order_id} moved from Redis to MongoDB")
+        else:
+            logger.info(f"Order {order_id} already in MongoDB (concurrent completion)")
+        return self._order_from_doc(saved), status
     
     def _validate_variant(self, product: Product, variant: dict) -> bool:
         """Validate that the variant matches the product's variant structure"""
@@ -371,52 +463,10 @@ class OrderService:
             razorpay_order_id, razorpay_payment_id, razorpay_signature
         ):
             raise ValueError("Invalid payment signature")
-        
-        database = await db.get_database()
-        orders_collection = database[self.COLLECTION_NAME]
-        
-        existing_order = await orders_collection.find_one({"order_id": order_id})
-        if existing_order:
-            logger.info(f"Order {order_id} already exists in MongoDB, skipping duplicate processing")
-            redis = await redis_client.get_client()
-            redis_key = f"pending_order:{order_id}"
-            await redis.delete(redis_key)
-            return Order(**existing_order)
-        
-        redis = await redis_client.get_client()
-        redis_key = f"pending_order:{order_id}"
-        order_json = await redis.get(redis_key)
-        
-        if not order_json:
+
+        order, status = await self.complete_pending_order(
+            order_id, razorpay_order_id, razorpay_payment_id
+        )
+        if status == "not_found":
             raise ValueError(f"Order {order_id} not found in Redis")
-        
-        order_dict = json.loads(order_json)
-        order_dict["payment_status"] = "completed"
-        order_dict["razorpay_order_id"] = razorpay_order_id
-        order_dict["razorpay_payment_id"] = razorpay_payment_id
-        order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
-        
-        logs_collection = database[self.ORDER_LOGS_COLLECTION]
-        
-        try:
-            result = await orders_collection.insert_one(order_dict)
-            order_dict["_id"] = result.inserted_id
-            
-            # Convert log to dict for MongoDB
-            log_dict = {
-                "order_id": order_id,
-                "raw_data": order_dict.get("raw_order_log", {}),
-                "created_at": datetime.utcnow()
-            }
-            await logs_collection.insert_one(log_dict)
-            
-            await redis.delete(redis_key)
-            logger.info(f"Payment verified and order created: {order_id}")
-            # Convert shipping_address dict to DTO when creating Order
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            return Order(**order_dict)
-        except Exception as e:
-            logger.error(f"Failed to create order {order_id} in MongoDB: {e}")
-            await redis.delete(redis_key)
-            raise
+        return order

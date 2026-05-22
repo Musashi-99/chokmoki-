@@ -1,8 +1,15 @@
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 from bson import ObjectId
 from datetime import datetime
 from src.models.product import PyObjectId
+
+
+class SocialGridLink(BaseModel):
+    platform: str = ""
+    handle: str = ""
+    image_url: str = ""
+    url: str = ""
 
 
 class HomePageSettings(BaseModel):
@@ -54,6 +61,7 @@ class HomePageSettings(BaseModel):
     faq_cta_label: str = ""
     social_instagram_handle: str = ""
     social_facebook_handle: str = ""
+    social_links: List[SocialGridLink] = Field(default_factory=list)
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -111,4 +119,5 @@ class HomePageSettingsUpdate(BaseModel):
     faq_cta_label: Optional[str] = None
     social_instagram_handle: Optional[str] = None
     social_facebook_handle: Optional[str] = None
+    social_links: Optional[List[SocialGridLink]] = None
     active: Optional[bool] = None

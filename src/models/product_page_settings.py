@@ -23,6 +23,16 @@ class ProductPageSettings(BaseModel):
     related_view_all_label: str = ""
     faq_eyebrow: str = ""
     faq_title: str = ""
+    trust_eyebrow: str = ""
+    trust_title: str = ""
+    trust_card_1_title: str = ""
+    trust_card_1_description: str = ""
+    trust_card_2_title: str = ""
+    trust_card_2_description: str = ""
+    trust_card_3_title: str = ""
+    trust_card_3_description: str = ""
+    trust_card_4_title: str = ""
+    trust_card_4_description: str = ""
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -49,4 +59,14 @@ class ProductPageSettingsUpdate(BaseModel):
     related_view_all_label: Optional[str] = None
     faq_eyebrow: Optional[str] = None
     faq_title: Optional[str] = None
+    trust_eyebrow: Optional[str] = None
+    trust_title: Optional[str] = None
+    trust_card_1_title: Optional[str] = None
+    trust_card_1_description: Optional[str] = None
+    trust_card_2_title: Optional[str] = None
+    trust_card_2_description: Optional[str] = None
+    trust_card_3_title: Optional[str] = None
+    trust_card_3_description: Optional[str] = None
+    trust_card_4_title: Optional[str] = None
+    trust_card_4_description: Optional[str] = None
     active: Optional[bool] = None
