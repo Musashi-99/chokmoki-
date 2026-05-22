@@ -44,6 +44,20 @@ try:
     from src.services.site_asset_service import SiteAssetService
     from src.services.faq_item_service import FAQItemService
     from src.services.collection_slide_service import CollectionSlideService
+    from src.services.studio_settings_service import StudioSettingsService
+    from src.services.shop_page_settings_service import ShopPageSettingsService
+    from src.services.policy_content_service import PolicyContentService
+    from src.models.studio_settings import StudioSettingsUpdate
+    from src.models.shop_page_settings import ShopPageSettingsUpdate
+    from src.models.policy_content import PolicyPageMetaUpdate, PolicySectionCreate
+    from src.services.home_page_settings_service import HomePageSettingsService
+    from src.services.story_page_settings_service import StoryPageSettingsService
+    from src.services.blog_service import BlogService
+    from src.services.inbox_service import InboxService
+    from src.models.home_page_settings import HomePageSettingsUpdate
+    from src.models.story_page_settings import StoryPageSettingsUpdate
+    from src.models.blog_post import BlogPostCreate, JournalPageSettingsUpdate
+    from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
     from src.services.cache_service import cache
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
@@ -73,6 +87,23 @@ except Exception as e:
     SiteAssetService = None
     FAQItemService = None
     CollectionSlideService = None
+    StudioSettingsService = None
+    ShopPageSettingsService = None
+    PolicyContentService = None
+    StudioSettingsUpdate = None
+    ShopPageSettingsUpdate = None
+    PolicyPageMetaUpdate = None
+    PolicySectionCreate = None
+    HomePageSettingsService = None
+    StoryPageSettingsService = None
+    BlogService = None
+    InboxService = None
+    HomePageSettingsUpdate = None
+    StoryPageSettingsUpdate = None
+    BlogPostCreate = None
+    JournalPageSettingsUpdate = None
+    ContactSubmissionCreate = None
+    NewsletterSubscribeCreate = None
     cache = None
 
 
@@ -137,6 +168,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+if RateLimitMiddleware:
+    app.add_middleware(RateLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -145,14 +179,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if RateLimitMiddleware:
-    app.add_middleware(RateLimitMiddleware)
-
 
 # ========== REST API Endpoints for Frontend ==========
 
-async def _cache_products_key(category, search, sort, skip, limit):
-    return f"chokmoki:products:{category or 'all'}:{search or 'all'}:{sort or 'default'}:{skip}:{limit}"
+async def _cache_products_key(category, search, sort, skip, limit, is_best_seller=None, is_curated=None):
+    return (
+        f"chokmoki:products:{category or 'all'}:{search or 'all'}:{sort or 'default'}"
+        f":bs{is_best_seller}:cur{is_curated}:{skip}:{limit}"
+    )
 
 
 @app.get("/api/products")
@@ -160,6 +194,8 @@ async def api_list_products(
     category: Optional[str] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
+    is_best_seller: Optional[bool] = None,
+    is_curated: Optional[bool] = None,
     skip: int = 0,
     limit: int = 50,
 ):
@@ -167,7 +203,9 @@ async def api_list_products(
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
-    cache_key = await _cache_products_key(category, search, sort, skip, limit)
+    cache_key = await _cache_products_key(
+        category, search, sort, skip, limit, is_best_seller, is_curated
+    )
     if cache:
         cached = await cache.get(cache_key)
         if cached:
@@ -176,9 +214,13 @@ async def api_list_products(
     service = ProductService()
     products = await service.list(
         skip=skip, limit=limit, active=True,
-        category=category, sort=sort, search=search
+        category=category, sort=sort, search=search,
+        is_best_seller=is_best_seller, is_curated=is_curated,
     )
-    total = await service.count(active=True, category=category, search=search)
+    total = await service.count(
+        active=True, category=category, search=search,
+        is_best_seller=is_best_seller, is_curated=is_curated,
+    )
     result = {"data": products, "count": total}
     
     if cache:
@@ -468,6 +510,7 @@ async def admin_list_products(
     search: Optional[str] = None,
     category: Optional[str] = None,
     active: Optional[bool] = None,
+    is_best_seller: Optional[bool] = None,
     email: str = Depends(require_admin),
 ):
     """List every product (including inactive) for the admin dashboard."""
@@ -477,9 +520,11 @@ async def admin_list_products(
     service = ProductService()
     products = await service.list(
         skip=skip, limit=limit, active=active,
-        category=category, search=search,
+        category=category, is_best_seller=is_best_seller, search=search,
     )
-    total = await service.count(active=active, category=category, search=search)
+    total = await service.count(
+        active=active, category=category, is_best_seller=is_best_seller, search=search
+    )
     return JSONResponse(content=json.loads(json.dumps({
         "data": products,
         "count": total,
@@ -667,13 +712,17 @@ async def api_get_hero_config():
 # ========== Admin: Testimonials ==========
 
 @app.get("/api/admin/testimonials")
-async def admin_list_testimonials(email: str = Depends(require_admin)):
+async def admin_list_testimonials(
+    skip: int = 0,
+    limit: int = 20,
+    email: str = Depends(require_admin),
+):
     """List all testimonials for admin."""
     if TestimonialService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     service = TestimonialService()
-    testimonials = await service.list(limit=100)
+    testimonials = await service.list(skip=skip, limit=limit)
     total = await service.count()
     
     return JSONResponse(content=json.loads(json.dumps({
@@ -1078,6 +1127,387 @@ async def admin_delete_collection_slide(slide_id: str, email: str = Depends(requ
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Collection slide not found")
+    return {"success": True}
+
+
+# ========== Public: Studio, Shop page, Policies ==========
+
+@app.get("/api/studio-settings")
+async def api_get_studio_settings():
+    if StudioSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await StudioSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/shop-page")
+async def api_get_shop_page():
+    if ShopPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await ShopPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/policies")
+async def api_get_policies():
+    if PolicyContentService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    bundle = await PolicyContentService().get_public_bundle()
+    return JSONResponse(content=_json_response_content(bundle))
+
+
+# ========== Admin: Studio settings ==========
+
+@app.get("/api/admin/studio-settings")
+async def admin_get_studio_settings(email: str = Depends(require_admin)):
+    if StudioSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await StudioSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/studio-settings")
+async def admin_upsert_studio_settings(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if StudioSettingsService is None or StudioSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = StudioSettingsUpdate(**payload)
+        updated = await StudioSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+# ========== Admin: Shop page ==========
+
+@app.get("/api/admin/shop-page")
+async def admin_get_shop_page(email: str = Depends(require_admin)):
+    if ShopPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await ShopPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/shop-page")
+async def admin_upsert_shop_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if ShopPageSettingsService is None or ShopPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = ShopPageSettingsUpdate(**payload)
+        updated = await ShopPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+# ========== Admin: Policies ==========
+
+@app.get("/api/admin/policies")
+async def admin_get_policies(email: str = Depends(require_admin)):
+    if PolicyContentService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    bundle = await PolicyContentService().get_admin_bundle()
+    return JSONResponse(content=_json_response_content(bundle))
+
+
+@app.put("/api/admin/policies/meta")
+async def admin_upsert_policy_meta(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if PolicyContentService is None or PolicyPageMetaUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = PolicyPageMetaUpdate(**payload)
+        updated = await PolicyContentService().upsert_meta(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/policies/sections/{slug}")
+async def admin_upsert_policy_section(
+    slug: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if PolicyContentService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        updated = await PolicyContentService().upsert_section_by_slug(slug, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+# ========== Public: Home, Story, Journal, Inbox ==========
+
+@app.get("/api/home-page")
+async def api_get_home_page():
+    if HomePageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await HomePageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/story-page")
+async def api_get_story_page():
+    if StoryPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await StoryPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/journal")
+async def api_get_journal():
+    if BlogService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    service = BlogService()
+    meta = await service.get_journal_public()
+    posts = await service.list_posts(active=True, limit=50)
+    return JSONResponse(content=_json_response_content({
+        "meta": meta,
+        "data": posts,
+        "count": len(posts),
+    }))
+
+
+@app.post("/api/contact")
+async def api_submit_contact(payload: Dict[str, Any]):
+    if InboxService is None or ContactSubmissionCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = ContactSubmissionCreate(**payload)
+        created = await InboxService().create_contact(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=_json_response_content({
+        "success": True,
+        "id": str(created.id),
+    }))
+
+
+@app.post("/api/newsletter")
+async def api_subscribe_newsletter(payload: Dict[str, Any]):
+    if InboxService is None or NewsletterSubscribeCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = NewsletterSubscribeCreate(**payload)
+        created = await InboxService().subscribe_newsletter(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=_json_response_content({
+        "success": True,
+        "id": str(created.id),
+    }))
+
+
+# ========== Admin: Home & Story pages ==========
+
+@app.get("/api/admin/home-page")
+async def admin_get_home_page(email: str = Depends(require_admin)):
+    if HomePageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await HomePageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/home-page")
+async def admin_upsert_home_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if HomePageSettingsService is None or HomePageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = HomePageSettingsUpdate(**payload)
+        updated = await HomePageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/story-page")
+async def admin_get_story_page(email: str = Depends(require_admin)):
+    if StoryPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await StoryPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/story-page")
+async def admin_upsert_story_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if StoryPageSettingsService is None or StoryPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = StoryPageSettingsUpdate(**payload)
+        updated = await StoryPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+# ========== Admin: Journal / Blog ==========
+
+@app.get("/api/admin/journal")
+async def admin_get_journal(email: str = Depends(require_admin)):
+    if BlogService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    service = BlogService()
+    meta = await service.get_journal_admin()
+    posts = await service.list_posts(limit=200)
+    return JSONResponse(content=_json_response_content({
+        "meta": meta.model_dump(by_alias=True) if meta else None,
+        "data": posts,
+        "count": len(posts),
+    }))
+
+
+@app.put("/api/admin/journal/meta")
+async def admin_upsert_journal_meta(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if BlogService is None or JournalPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = JournalPageSettingsUpdate(**payload)
+        updated = await BlogService().upsert_journal(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.post("/api/admin/blog-posts")
+async def admin_create_blog_post(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if BlogService is None or BlogPostCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = BlogPostCreate(**payload)
+        created = await BlogService().create_post(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        created.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.put("/api/admin/blog-posts/{post_id}")
+async def admin_update_blog_post(
+    post_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if BlogService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        updated = await BlogService().update_post(post_id, payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Blog post not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.delete("/api/admin/blog-posts/{post_id}")
+async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admin)):
+    if BlogService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    deleted = await BlogService().delete_post(post_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Blog post not found")
+    return {"success": True}
+
+
+# ========== Admin: Inbox (contact + newsletter) ==========
+
+@app.get("/api/admin/inbox")
+async def admin_get_inbox(
+    skip: int = 0,
+    limit: int = 100,
+    email: str = Depends(require_admin),
+):
+    if InboxService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    service = InboxService()
+    contacts = await service.list_contacts(skip=skip, limit=limit)
+    newsletter = await service.list_newsletter(skip=skip, limit=limit)
+    return JSONResponse(content=_json_response_content({
+        "contacts": contacts,
+        "contacts_count": await service.count_contacts(),
+        "contacts_unread": await service.count_contacts(unread_only=True),
+        "newsletter": newsletter,
+        "newsletter_count": await service.count_newsletter(),
+        "newsletter_unread": await service.count_newsletter(unread_only=True),
+    }))
+
+
+@app.patch("/api/admin/inbox/contacts/{submission_id}")
+async def admin_patch_contact(
+    submission_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if InboxService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    read = payload.get("read", True)
+    ok = await InboxService().mark_contact_read(submission_id, bool(read))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Contact submission not found")
+    return {"success": True}
+
+
+@app.delete("/api/admin/inbox/contacts/{submission_id}")
+async def admin_delete_contact(submission_id: str, email: str = Depends(require_admin)):
+    if InboxService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    if not await InboxService().delete_contact(submission_id):
+        raise HTTPException(status_code=404, detail="Contact submission not found")
+    return {"success": True}
+
+
+@app.patch("/api/admin/inbox/newsletter/{sub_id}")
+async def admin_patch_newsletter(
+    sub_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if InboxService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    read = payload.get("read", True)
+    ok = await InboxService().mark_newsletter_read(sub_id, bool(read))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"success": True}
+
+
+@app.delete("/api/admin/inbox/newsletter/{sub_id}")
+async def admin_delete_newsletter(sub_id: str, email: str = Depends(require_admin)):
+    if InboxService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    if not await InboxService().delete_newsletter(sub_id):
+        raise HTTPException(status_code=404, detail="Subscription not found")
     return {"success": True}
 
 

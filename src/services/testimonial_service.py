@@ -36,8 +36,13 @@ class TestimonialService:
             return Testimonial(**doc)
         return None
     
-    async def list(self, active: Optional[bool] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        cache_key = f"{self.CACHE_PREFIX}:list:{active if active is not None else 'all'}:{limit}"
+    async def list(
+        self,
+        active: Optional[bool] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        cache_key = f"{self.CACHE_PREFIX}:list:{active if active is not None else 'all'}:{skip}:{limit}"
         cached = await cache.get(cache_key)
         if cached:
             return json.loads(cached)
@@ -49,7 +54,7 @@ class TestimonialService:
         if active is not None:
             query["active"] = active
         
-        cursor = collection.find(query).sort("created_at", -1).limit(limit)
+        cursor = collection.find(query).sort("created_at", -1).skip(skip).limit(limit)
         docs = await cursor.to_list(length=limit)
         result = [Testimonial(**doc).model_dump(by_alias=True) for doc in docs]
         

@@ -45,6 +45,8 @@ class ProductService:
         limit: int = 50,
         active: Optional[bool] = None,
         category: Optional[str] = None,
+        is_best_seller: Optional[bool] = None,
+        is_curated: Optional[bool] = None,
         sort: Optional[str] = None,
         search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -56,6 +58,10 @@ class ProductService:
             query["active"] = active
         if category:
             query["category"] = category
+        if is_best_seller is not None:
+            query["is_best_seller"] = is_best_seller
+        if is_curated is not None:
+            query["is_curated"] = is_curated
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
@@ -82,6 +88,8 @@ class ProductService:
         self,
         active: Optional[bool] = None,
         category: Optional[str] = None,
+        is_best_seller: Optional[bool] = None,
+        is_curated: Optional[bool] = None,
         search: Optional[str] = None,
     ) -> int:
         database = await db.get_database()
@@ -92,6 +100,10 @@ class ProductService:
             query["active"] = active
         if category:
             query["category"] = category
+        if is_best_seller is not None:
+            query["is_best_seller"] = is_best_seller
+        if is_curated is not None:
+            query["is_curated"] = is_curated
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},

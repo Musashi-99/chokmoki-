@@ -203,6 +203,20 @@ class OrderService:
         query = self._build_order_query(user_email, status, search, from_date, to_date)
         return await collection.count_documents(query)
 
+    @staticmethod
+    def _parse_filter_datetime(value: str, *, end_of_day: bool = False) -> datetime:
+        """Parse YYYY-MM-DD (admin date inputs) or ISO datetimes for list filters."""
+        raw = value.strip()
+        if "T" in raw or raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+        day = datetime.fromisoformat(raw)
+        if end_of_day:
+            return day.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return day.replace(hour=0, minute=0, second=0, microsecond=0)
+
     def _build_order_query(
         self,
         user_email: Optional[str] = None,
@@ -226,9 +240,9 @@ class OrderService:
         if from_date or to_date:
             date_filter: dict = {}
             if from_date:
-                date_filter["$gte"] = datetime.fromisoformat(from_date)
+                date_filter["$gte"] = self._parse_filter_datetime(from_date, end_of_day=False)
             if to_date:
-                date_filter["$lte"] = datetime.fromisoformat(to_date)
+                date_filter["$lte"] = self._parse_filter_datetime(to_date, end_of_day=True)
             if date_filter:
                 query["created_at"] = date_filter
         return query

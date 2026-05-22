@@ -44,10 +44,10 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    rate_limit_normal_get: int = Field(default=40, env="RATE_LIMIT_NORMAL_GET")
-    rate_limit_normal_post: int = Field(default=40, env="RATE_LIMIT_NORMAL_POST")
+    rate_limit_normal_get: int = Field(default=400, env="RATE_LIMIT_NORMAL_GET")
+    rate_limit_normal_post: int = Field(default=400, env="RATE_LIMIT_NORMAL_POST")
     rate_limit_normal_time: str = Field(default="3m", env="RATE_LIMIT_NORMAL_TIME")
-    rate_limit_order_max: int = Field(default=5, env="RATE_LIMIT_ORDER_MAX")
+    rate_limit_order_max: int = Field(default=50, env="RATE_LIMIT_ORDER_MAX")
     rate_limit_order_time: str = Field(default="24h", env="RATE_LIMIT_ORDER_TIME")
 
 
