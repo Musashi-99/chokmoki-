@@ -54,9 +54,17 @@ try:
     from src.services.story_page_settings_service import StoryPageSettingsService
     from src.services.blog_service import BlogService
     from src.services.inbox_service import InboxService
+    from src.services.navigation_settings_service import NavigationSettingsService
+    from src.services.contact_page_settings_service import ContactPageSettingsService
+    from src.services.history_page_settings_service import HistoryPageSettingsService
+    from src.services.product_page_settings_service import ProductPageSettingsService
     from src.models.home_page_settings import HomePageSettingsUpdate
     from src.models.story_page_settings import StoryPageSettingsUpdate
     from src.models.blog_post import BlogPostCreate, JournalPageSettingsUpdate
+    from src.models.navigation_settings import NavigationSettingsUpdate
+    from src.models.contact_page_settings import ContactPageSettingsUpdate
+    from src.models.history_page_settings import HistoryPageSettingsUpdate
+    from src.models.product_page_settings import ProductPageSettingsUpdate
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
     from src.services.cache_service import cache
 except Exception as e:
@@ -102,6 +110,14 @@ except Exception as e:
     StoryPageSettingsUpdate = None
     BlogPostCreate = None
     JournalPageSettingsUpdate = None
+    NavigationSettingsService = None
+    ContactPageSettingsService = None
+    HistoryPageSettingsService = None
+    ProductPageSettingsService = None
+    NavigationSettingsUpdate = None
+    ContactPageSettingsUpdate = None
+    HistoryPageSettingsUpdate = None
+    ProductPageSettingsUpdate = None
     ContactSubmissionCreate = None
     NewsletterSubscribeCreate = None
     cache = None
@@ -1271,6 +1287,38 @@ async def api_get_story_page():
     return JSONResponse(content=_json_response_content({"data": data}))
 
 
+@app.get("/api/navigation")
+async def api_get_navigation():
+    if NavigationSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await NavigationSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/contact-page")
+async def api_get_contact_page():
+    if ContactPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await ContactPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/history-page")
+async def api_get_history_page():
+    if HistoryPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await HistoryPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@app.get("/api/product-page")
+async def api_get_product_page():
+    if ProductPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await ProductPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
 @app.get("/api/journal")
 async def api_get_journal():
     if BlogService is None:
@@ -1362,6 +1410,110 @@ async def admin_upsert_story_page(
     try:
         data = StoryPageSettingsUpdate(**payload)
         updated = await StoryPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/navigation")
+async def admin_get_navigation(email: str = Depends(require_admin)):
+    if NavigationSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await NavigationSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/navigation")
+async def admin_upsert_navigation(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if NavigationSettingsService is None or NavigationSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = NavigationSettingsUpdate(**payload)
+        updated = await NavigationSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/contact-page")
+async def admin_get_contact_page(email: str = Depends(require_admin)):
+    if ContactPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await ContactPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/contact-page")
+async def admin_upsert_contact_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if ContactPageSettingsService is None or ContactPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = ContactPageSettingsUpdate(**payload)
+        updated = await ContactPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/history-page")
+async def admin_get_history_page(email: str = Depends(require_admin)):
+    if HistoryPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await HistoryPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/history-page")
+async def admin_upsert_history_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if HistoryPageSettingsService is None or HistoryPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = HistoryPageSettingsUpdate(**payload)
+        updated = await HistoryPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/product-page")
+async def admin_get_product_page(email: str = Depends(require_admin)):
+    if ProductPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await ProductPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@app.put("/api/admin/product-page")
+async def admin_upsert_product_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if ProductPageSettingsService is None or ProductPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = ProductPageSettingsUpdate(**payload)
+        updated = await ProductPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=json.loads(json.dumps(

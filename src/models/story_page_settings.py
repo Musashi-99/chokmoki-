@@ -33,6 +33,9 @@ class StoryPageSettings(BaseModel):
     closing_label: str = ""
     closing_title: str = ""
     closing_body: str = ""
+    closing_cta_label: str = ""
+    closing_cta_to: str = "/products"
+    closing_back_label: str = ""
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -69,4 +72,7 @@ class StoryPageSettingsUpdate(BaseModel):
     closing_label: Optional[str] = None
     closing_title: Optional[str] = None
     closing_body: Optional[str] = None
+    closing_cta_label: Optional[str] = None
+    closing_cta_to: Optional[str] = None
+    closing_back_label: Optional[str] = None
     active: Optional[bool] = None

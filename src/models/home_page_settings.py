@@ -42,6 +42,18 @@ class HomePageSettings(BaseModel):
     trust_card_4_description: str = ""
     testimonials_eyebrow: str = ""
     testimonials_title: str = ""
+    footer_tagline: str = ""
+    categories_all_title: str = ""
+    categories_all_microcopy: str = ""
+    categories_all_image_url: str = ""
+    categories_all_to: str = "/products"
+    categories_card_cta: str = ""
+    categories_view_all_label: str = ""
+    faq_eyebrow: str = ""
+    faq_title: str = ""
+    faq_cta_label: str = ""
+    social_instagram_handle: str = ""
+    social_facebook_handle: str = ""
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -87,4 +99,16 @@ class HomePageSettingsUpdate(BaseModel):
     trust_card_4_description: Optional[str] = None
     testimonials_eyebrow: Optional[str] = None
     testimonials_title: Optional[str] = None
+    footer_tagline: Optional[str] = None
+    categories_all_title: Optional[str] = None
+    categories_all_microcopy: Optional[str] = None
+    categories_all_image_url: Optional[str] = None
+    categories_all_to: Optional[str] = None
+    categories_card_cta: Optional[str] = None
+    categories_view_all_label: Optional[str] = None
+    faq_eyebrow: Optional[str] = None
+    faq_title: Optional[str] = None
+    faq_cta_label: Optional[str] = None
+    social_instagram_handle: Optional[str] = None
+    social_facebook_handle: Optional[str] = None
     active: Optional[bool] = None
