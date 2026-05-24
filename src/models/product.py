@@ -63,6 +63,8 @@ class JewelryProduct(BaseModel):
     sizes: List[str] = []
     is_best_seller: bool = False
     is_curated: bool = False
+    best_seller_order: int = 0
+    curated_order: int = 0
     weight_grams: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"
@@ -98,6 +100,8 @@ class JewelryProductCreate(BaseModel):
     sizes: List[str] = []
     is_best_seller: bool = False
     is_curated: bool = False
+    best_seller_order: int = 0
+    curated_order: int = 0
     weight_grams: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"

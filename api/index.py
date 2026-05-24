@@ -460,6 +460,31 @@ async def admin_list_orders(
     }, cls=JSONEncoder)))
 
 
+@app.post("/api/admin/orders")
+async def admin_create_order(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Create an order from the admin dashboard (phone / manual orders)."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    try:
+        service = OrderService()
+        order = await service.create_from_admin(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if logger:
+            logger.error(f"Admin order creation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+    return JSONResponse(
+        content=json.loads(
+            json.dumps(order.model_dump(by_alias=True), cls=JSONEncoder)
+        )
+    )
+
+
 @app.put("/api/admin/orders/{order_id}/status")
 async def admin_update_order_status(
     order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
@@ -551,6 +576,7 @@ async def admin_list_products(
     category: Optional[str] = None,
     active: Optional[bool] = None,
     is_best_seller: Optional[bool] = None,
+    is_curated: Optional[bool] = None,
     email: str = Depends(require_admin),
 ):
     """List every product (including inactive) for the admin dashboard."""
@@ -560,10 +586,10 @@ async def admin_list_products(
     service = ProductService()
     products = await service.list(
         skip=skip, limit=limit, active=active,
-        category=category, is_best_seller=is_best_seller, search=search,
+        category=category, is_best_seller=is_best_seller, is_curated=is_curated, search=search,
     )
     total = await service.count(
-        active=active, category=category, is_best_seller=is_best_seller, search=search
+        active=active, category=category, is_best_seller=is_best_seller, is_curated=is_curated, search=search
     )
     return JSONResponse(content=json.loads(json.dumps({
         "data": products,
@@ -678,6 +704,11 @@ async def admin_create_category(
     )))
 
 
+_CATEGORY_UPDATE_FIELDS = frozenset({
+    "slug", "name", "tagline", "banner", "thumbnail", "description", "sort_order", "active",
+})
+
+
 @app.put("/api/admin/categories/{category_id}")
 async def admin_update_category(
     category_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
@@ -686,8 +717,12 @@ async def admin_update_category(
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
+    update_data = {k: v for k, v in payload.items() if k in _CATEGORY_UPDATE_FIELDS}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
     try:
-        updated = await CategoryService().update(category_id, payload)
+        updated = await CategoryService().update(category_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -874,7 +909,8 @@ async def admin_update_hero_config(
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     try:
-        updated = await HeroConfigService().update(config_id, payload)
+        data = HeroConfigCreate(**payload)
+        updated = await HeroConfigService().update(config_id, data.model_dump())
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:

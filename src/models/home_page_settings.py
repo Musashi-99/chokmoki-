@@ -27,6 +27,7 @@ class HomePageSettings(BaseModel):
     best_sellers_title: str = ""
     curated_eyebrow: str = ""
     curated_title: str = ""
+    curated_description: str = ""
     social_eyebrow: str = ""
     social_title: str = ""
     social_body: str = ""
@@ -50,6 +51,11 @@ class HomePageSettings(BaseModel):
     testimonials_eyebrow: str = ""
     testimonials_title: str = ""
     footer_tagline: str = ""
+    footer_explore_heading: str = ""
+    footer_shop_heading: str = ""
+    footer_newsletter_heading: str = ""
+    footer_copyright_text: str = ""
+    footer_craft_text: str = ""
     categories_all_title: str = ""
     categories_all_microcopy: str = ""
     categories_all_image_url: str = ""
@@ -85,6 +91,7 @@ class HomePageSettingsUpdate(BaseModel):
     best_sellers_title: Optional[str] = None
     curated_eyebrow: Optional[str] = None
     curated_title: Optional[str] = None
+    curated_description: Optional[str] = None
     social_eyebrow: Optional[str] = None
     social_title: Optional[str] = None
     social_body: Optional[str] = None
@@ -108,6 +115,11 @@ class HomePageSettingsUpdate(BaseModel):
     testimonials_eyebrow: Optional[str] = None
     testimonials_title: Optional[str] = None
     footer_tagline: Optional[str] = None
+    footer_explore_heading: Optional[str] = None
+    footer_shop_heading: Optional[str] = None
+    footer_newsletter_heading: Optional[str] = None
+    footer_copyright_text: Optional[str] = None
+    footer_craft_text: Optional[str] = None
     categories_all_title: Optional[str] = None
     categories_all_microcopy: Optional[str] = None
     categories_all_image_url: Optional[str] = None

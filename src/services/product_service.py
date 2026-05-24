@@ -72,7 +72,11 @@ class ProductService:
         
         cursor = collection.find(query)
         
-        if sort == "low":
+        if is_best_seller:
+            cursor = cursor.sort([("best_seller_order", 1), ("created_at", -1)])
+        elif is_curated:
+            cursor = cursor.sort([("curated_order", 1), ("created_at", -1)])
+        elif sort == "low":
             cursor = cursor.sort("price_inr", 1)
         elif sort == "high":
             cursor = cursor.sort("price_inr", -1)

@@ -226,6 +226,128 @@ class OrderService:
         # Convert shipping_address dict to DTO when creating Order
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
+
+    async def create_from_admin(self, payload: dict) -> Order:
+        """Create an order from the admin dashboard (manual / phone orders)."""
+        user_email = (payload.get("user_email") or "").strip()
+        shipping_address = payload.get("shipping_address") or {}
+        items_in = payload.get("items") or []
+
+        if not user_email:
+            raise ValueError("user_email is required")
+        if not shipping_address.get("full_name") or not shipping_address.get("phone"):
+            raise ValueError("Customer name and phone are required")
+        if not shipping_address.get("address_line1") or not shipping_address.get("city"):
+            raise ValueError("Shipping address is incomplete")
+        if not items_in:
+            raise ValueError("At least one line item is required")
+
+        product_service = ProductService()
+        validated_items: List[ValidatedOrderItem] = []
+
+        for raw in items_in:
+            product_id = raw.get("product_id") or raw.get("productId")
+            if not product_id:
+                raise ValueError("Each line item needs a product_id")
+            quantity = int(raw.get("quantity") or 0)
+            if quantity < 1:
+                raise ValueError("Quantity must be at least 1")
+
+            product = await product_service.get_by_id(str(product_id))
+            if not product:
+                raise ValueError(f"Product {product_id} not found")
+            if not product.active:
+                raise ValueError(f"Product {product.name} is not active")
+
+            variant = raw.get("variant") or {}
+            if not variant:
+                variant = {"default": "default"}
+            if not self._validate_variant(product, variant):
+                raise ValueError(f"Invalid variant for product {product.name}")
+
+            unit_price = float(raw.get("unit_price", product.price_inr))
+            validated_items.append(
+                ValidatedOrderItem(
+                    product_id=str(product_id),
+                    product_name=raw.get("product_name") or product.name,
+                    variant=variant,
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_price=unit_price * quantity,
+                    size=raw.get("size"),
+                )
+            )
+
+        subtotal = float(payload.get("subtotal", sum(i.total_price for i in validated_items)))
+        shipping = max(0.0, float(payload.get("shipping", 0)))
+        discount = max(0.0, float(payload.get("discount", 0)))
+        total_amount = float(
+            payload.get("total_amount", max(0.0, subtotal + shipping - discount))
+        )
+
+        payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
+        payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
+        payment_status = payload.get("payment_status") or (
+            "completed" if payment_method == "cod" else "pending"
+        )
+
+        status_payload = payload.get("status") or {}
+        status = OrderStatus(
+            type=status_payload.get("type", "accepted"),
+            reason=status_payload.get("reason", "Created from dashboard"),
+        )
+
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+
+        order_id = str(uuid.uuid4())
+        raw_order_log = {
+            **payload,
+            "order_id": order_id,
+            "source": "admin_dashboard",
+            "received_at": datetime.utcnow().isoformat(),
+        }
+
+        shipping_address["email"] = shipping_address.get("email") or user_email
+
+        order_dict = {
+            "order_id": order_id,
+            "user_email": user_email,
+            "shipping_address": shipping_address,
+            "items": [item.model_dump() for item in validated_items],
+            "special_message": payload.get("special_message") or "",
+            "subtotal": subtotal,
+            "discount": discount,
+            "shipping": shipping,
+            "total_amount": total_amount,
+            "payment_method": payment_method,
+            "payment_status": payment_status,
+            "status": status.model_dump(),
+            "created_at": datetime.utcnow(),
+            "raw_order_log": raw_order_log,
+        }
+
+        result = await orders_collection.insert_one(order_dict)
+        order_dict["_id"] = result.inserted_id
+
+        log_dict = {
+            "order_id": order_id,
+            "raw_data": raw_order_log,
+            "created_at": datetime.utcnow(),
+        }
+        await logs_collection.insert_one(log_dict)
+
+        if TelegramService:
+            telegram_service = TelegramService()
+            try:
+                await telegram_service.push_order_to_queue(order_dict)
+            except Exception as e:
+                logger.warning(f"Failed to push admin order to Telegram queue: {e}")
+
+        logger.info(f"Admin order created: {order_id}")
+        order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+        return Order(**order_dict)
     
     async def get_by_id(self, order_id: str) -> Optional[Order]:
         """Get order by order_id (not MongoDB _id)"""

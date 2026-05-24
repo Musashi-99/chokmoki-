@@ -68,10 +68,10 @@ class CategoryService:
             {"_id": ObjectId(category_id)},
             {"$set": update_data}
         )
-        
-        if result.modified_count > 0:
-            return await self.get_by_id(category_id)
-        return None
+
+        if result.matched_count == 0:
+            return None
+        return await self.get_by_id(category_id)
     
     async def delete(self, category_id: str) -> bool:
         database = await db.get_database()
