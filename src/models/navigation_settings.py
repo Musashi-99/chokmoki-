@@ -25,6 +25,7 @@ class NavigationSettings(BaseModel):
     postcard_label: str = ""
     postcard_to: str = "/contact#postcard"
     back_to_home_label: str = ""
+    drawer_links_json: Optional[str] = ""
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -53,4 +54,5 @@ class NavigationSettingsUpdate(BaseModel):
     postcard_label: Optional[str] = None
     postcard_to: Optional[str] = None
     back_to_home_label: Optional[str] = None
+    drawer_links_json: Optional[str] = None
     active: Optional[bool] = None

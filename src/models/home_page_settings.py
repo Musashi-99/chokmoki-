@@ -56,6 +56,8 @@ class HomePageSettings(BaseModel):
     footer_newsletter_heading: str = ""
     footer_copyright_text: str = ""
     footer_craft_text: str = ""
+    footer_explore_links_json: str = ""
+    footer_social_links_json: str = ""
     categories_all_title: str = ""
     categories_all_microcopy: str = ""
     categories_all_image_url: str = ""
@@ -120,6 +122,8 @@ class HomePageSettingsUpdate(BaseModel):
     footer_newsletter_heading: Optional[str] = None
     footer_copyright_text: Optional[str] = None
     footer_craft_text: Optional[str] = None
+    footer_explore_links_json: Optional[str] = None
+    footer_social_links_json: Optional[str] = None
     categories_all_title: Optional[str] = None
     categories_all_microcopy: Optional[str] = None
     categories_all_image_url: Optional[str] = None

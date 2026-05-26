@@ -53,6 +53,11 @@ class JournalPageSettings(BaseModel):
     philosophy_body: str = ""
     philosophy_image_url: str = ""
     feature_image_url: str = ""
+    feature_title: str = ""
+    feature_excerpt: str = ""
+    feature_date: str = ""
+    feature_read_time: str = ""
+    feature_link_to: str = "/story"
     philosophy_cta_label: str = ""
     philosophy_cta_to: str = "/story"
     closing_eyebrow: str = ""
@@ -84,6 +89,11 @@ class JournalPageSettingsUpdate(BaseModel):
     philosophy_body: Optional[str] = None
     philosophy_image_url: Optional[str] = None
     feature_image_url: Optional[str] = None
+    feature_title: Optional[str] = None
+    feature_excerpt: Optional[str] = None
+    feature_date: Optional[str] = None
+    feature_read_time: Optional[str] = None
+    feature_link_to: Optional[str] = None
     philosophy_cta_label: Optional[str] = None
     philosophy_cta_to: Optional[str] = None
     closing_eyebrow: Optional[str] = None
