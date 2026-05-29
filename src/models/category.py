@@ -10,6 +10,7 @@ class JewelryCategory(BaseModel):
     name: str
     tagline: str = ""
     banner: str = ""
+    thumbnail: str = ""
     description: str = ""
     sort_order: int = 0
     active: bool = True
@@ -26,6 +27,7 @@ class JewelryCategoryCreate(BaseModel):
     name: str
     tagline: str = ""
     banner: str = ""
+    thumbnail: str = ""
     description: str = ""
     sort_order: int = 0
     active: bool = True

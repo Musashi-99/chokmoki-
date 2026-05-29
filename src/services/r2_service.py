@@ -4,7 +4,6 @@ from typing import Optional
 from src.config import settings
 from src.plugins.logger import logger
 import uuid
-import mimetypes
 
 
 class R2Service:
@@ -47,15 +46,20 @@ class R2Service:
                 # Bucket may already exist or be owned by this account
                 logger.warning(f"R2 bucket '{self._bucket}' create skipped: {e}")
 
-    async def upload_file(self, file_bytes: bytes, filename: str, folder: str = "products") -> Optional[str]:
-        """Upload file to R2 and return public URL"""
+    async def upload_file(
+        self,
+        file_bytes: bytes,
+        extension: str,
+        content_type: str,
+        folder: str = "products",
+    ) -> Optional[str]:
+        """Upload validated file bytes to R2 and return public URL."""
         try:
             client = self._get_client()
-            ext = filename.split(".")[-1].lower() if "." in filename else "jpg"
+            ext = extension.lower().lstrip(".")
             folder = (folder or "").strip("/")
             parts = [p for p in (self._key_prefix, folder, f"{uuid.uuid4().hex}.{ext}") if p]
             key = "/".join(parts)
-            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
             client.put_object(
                 Bucket=self._bucket,

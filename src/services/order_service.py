@@ -24,6 +24,98 @@ except ImportError:
 class OrderService:
     COLLECTION_NAME = "orders"
     ORDER_LOGS_COLLECTION = "order_logs"
+
+    async def ensure_indexes(self) -> None:
+        """Unique order_id prevents duplicate inserts under concurrent webhooks."""
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+        await orders_collection.create_index("order_id", unique=True)
+        await logs_collection.create_index("order_id", unique=True)
+
+    def _order_from_doc(self, order_doc: dict) -> Order:
+        if isinstance(order_doc.get("shipping_address"), dict):
+            order_doc = {**order_doc}
+            order_doc["shipping_address"] = ShippingAddressInOrder(
+                **order_doc["shipping_address"]
+            )
+        return Order(**order_doc)
+
+    async def _clear_pending_redis(self, order_id: str) -> None:
+        redis = await redis_client.get_client()
+        await redis.delete(f"pending_order:{order_id}")
+
+    async def complete_pending_order(
+        self,
+        order_id: str,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+    ) -> tuple[Optional[Order], str]:
+        """
+        Atomically persist a paid order from Redis to MongoDB.
+        Returns (order, status) where status is 'created', 'existing', or 'not_found'.
+        """
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+
+        existing = await orders_collection.find_one({"order_id": order_id})
+        if existing:
+            await self._clear_pending_redis(order_id)
+            return self._order_from_doc(existing), "existing"
+
+        redis = await redis_client.get_client()
+        redis_key = f"pending_order:{order_id}"
+        order_json = await redis.get(redis_key)
+        if not order_json:
+            existing = await orders_collection.find_one({"order_id": order_id})
+            if existing:
+                return self._order_from_doc(existing), "existing"
+            return None, "not_found"
+
+        order_dict = json.loads(order_json)
+        order_dict["payment_status"] = "completed"
+        order_dict["razorpay_order_id"] = razorpay_order_id
+        order_dict["razorpay_payment_id"] = razorpay_payment_id
+        order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
+        order_dict.pop("_id", None)
+
+        result = await orders_collection.update_one(
+            {"order_id": order_id},
+            {"$setOnInsert": order_dict},
+            upsert=True,
+        )
+        created = result.upserted_id is not None
+
+        saved = await orders_collection.find_one({"order_id": order_id})
+        if not saved:
+            return None, "not_found"
+
+        if created:
+            log_dict = {
+                "order_id": order_id,
+                "raw_data": order_dict.get("raw_order_log", {}),
+                "created_at": datetime.utcnow(),
+            }
+            await logs_collection.update_one(
+                {"order_id": order_id},
+                {"$setOnInsert": log_dict},
+                upsert=True,
+            )
+            if TelegramService:
+                telegram_service = TelegramService()
+                try:
+                    await telegram_service.push_order_to_queue(saved)
+                except Exception as e:
+                    logger.warning(f"Failed to push order to Telegram queue: {e}")
+
+        await self._clear_pending_redis(order_id)
+        status = "created" if created else "existing"
+        if status == "created":
+            logger.info(f"Order {order_id} moved from Redis to MongoDB")
+        else:
+            logger.info(f"Order {order_id} already in MongoDB (concurrent completion)")
+        return self._order_from_doc(saved), status
     
     def _validate_variant(self, product: Product, variant: dict) -> bool:
         """Validate that the variant matches the product's variant structure"""
@@ -134,6 +226,128 @@ class OrderService:
         # Convert shipping_address dict to DTO when creating Order
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
+
+    async def create_from_admin(self, payload: dict) -> Order:
+        """Create an order from the admin dashboard (manual / phone orders)."""
+        user_email = (payload.get("user_email") or "").strip()
+        shipping_address = payload.get("shipping_address") or {}
+        items_in = payload.get("items") or []
+
+        if not user_email:
+            raise ValueError("user_email is required")
+        if not shipping_address.get("full_name") or not shipping_address.get("phone"):
+            raise ValueError("Customer name and phone are required")
+        if not shipping_address.get("address_line1") or not shipping_address.get("city"):
+            raise ValueError("Shipping address is incomplete")
+        if not items_in:
+            raise ValueError("At least one line item is required")
+
+        product_service = ProductService()
+        validated_items: List[ValidatedOrderItem] = []
+
+        for raw in items_in:
+            product_id = raw.get("product_id") or raw.get("productId")
+            if not product_id:
+                raise ValueError("Each line item needs a product_id")
+            quantity = int(raw.get("quantity") or 0)
+            if quantity < 1:
+                raise ValueError("Quantity must be at least 1")
+
+            product = await product_service.get_by_id(str(product_id))
+            if not product:
+                raise ValueError(f"Product {product_id} not found")
+            if not product.active:
+                raise ValueError(f"Product {product.name} is not active")
+
+            variant = raw.get("variant") or {}
+            if not variant:
+                variant = {"default": "default"}
+            if not self._validate_variant(product, variant):
+                raise ValueError(f"Invalid variant for product {product.name}")
+
+            unit_price = float(raw.get("unit_price", product.price_inr))
+            validated_items.append(
+                ValidatedOrderItem(
+                    product_id=str(product_id),
+                    product_name=raw.get("product_name") or product.name,
+                    variant=variant,
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    total_price=unit_price * quantity,
+                    size=raw.get("size"),
+                )
+            )
+
+        subtotal = float(payload.get("subtotal", sum(i.total_price for i in validated_items)))
+        shipping = max(0.0, float(payload.get("shipping", 0)))
+        discount = max(0.0, float(payload.get("discount", 0)))
+        total_amount = float(
+            payload.get("total_amount", max(0.0, subtotal + shipping - discount))
+        )
+
+        payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
+        payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
+        payment_status = payload.get("payment_status") or (
+            "completed" if payment_method == "cod" else "pending"
+        )
+
+        status_payload = payload.get("status") or {}
+        status = OrderStatus(
+            type=status_payload.get("type", "accepted"),
+            reason=status_payload.get("reason", "Created from dashboard"),
+        )
+
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+
+        order_id = str(uuid.uuid4())
+        raw_order_log = {
+            **payload,
+            "order_id": order_id,
+            "source": "admin_dashboard",
+            "received_at": datetime.utcnow().isoformat(),
+        }
+
+        shipping_address["email"] = shipping_address.get("email") or user_email
+
+        order_dict = {
+            "order_id": order_id,
+            "user_email": user_email,
+            "shipping_address": shipping_address,
+            "items": [item.model_dump() for item in validated_items],
+            "special_message": payload.get("special_message") or "",
+            "subtotal": subtotal,
+            "discount": discount,
+            "shipping": shipping,
+            "total_amount": total_amount,
+            "payment_method": payment_method,
+            "payment_status": payment_status,
+            "status": status.model_dump(),
+            "created_at": datetime.utcnow(),
+            "raw_order_log": raw_order_log,
+        }
+
+        result = await orders_collection.insert_one(order_dict)
+        order_dict["_id"] = result.inserted_id
+
+        log_dict = {
+            "order_id": order_id,
+            "raw_data": raw_order_log,
+            "created_at": datetime.utcnow(),
+        }
+        await logs_collection.insert_one(log_dict)
+
+        if TelegramService:
+            telegram_service = TelegramService()
+            try:
+                await telegram_service.push_order_to_queue(order_dict)
+            except Exception as e:
+                logger.warning(f"Failed to push admin order to Telegram queue: {e}")
+
+        logger.info(f"Admin order created: {order_id}")
+        order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+        return Order(**order_dict)
     
     async def get_by_id(self, order_id: str) -> Optional[Order]:
         """Get order by order_id (not MongoDB _id)"""
@@ -203,6 +417,20 @@ class OrderService:
         query = self._build_order_query(user_email, status, search, from_date, to_date)
         return await collection.count_documents(query)
 
+    @staticmethod
+    def _parse_filter_datetime(value: str, *, end_of_day: bool = False) -> datetime:
+        """Parse YYYY-MM-DD (admin date inputs) or ISO datetimes for list filters."""
+        raw = value.strip()
+        if "T" in raw or raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+        day = datetime.fromisoformat(raw)
+        if end_of_day:
+            return day.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return day.replace(hour=0, minute=0, second=0, microsecond=0)
+
     def _build_order_query(
         self,
         user_email: Optional[str] = None,
@@ -226,9 +454,9 @@ class OrderService:
         if from_date or to_date:
             date_filter: dict = {}
             if from_date:
-                date_filter["$gte"] = datetime.fromisoformat(from_date)
+                date_filter["$gte"] = self._parse_filter_datetime(from_date, end_of_day=False)
             if to_date:
-                date_filter["$lte"] = datetime.fromisoformat(to_date)
+                date_filter["$lte"] = self._parse_filter_datetime(to_date, end_of_day=True)
             if date_filter:
                 query["created_at"] = date_filter
         return query
@@ -357,52 +585,10 @@ class OrderService:
             razorpay_order_id, razorpay_payment_id, razorpay_signature
         ):
             raise ValueError("Invalid payment signature")
-        
-        database = await db.get_database()
-        orders_collection = database[self.COLLECTION_NAME]
-        
-        existing_order = await orders_collection.find_one({"order_id": order_id})
-        if existing_order:
-            logger.info(f"Order {order_id} already exists in MongoDB, skipping duplicate processing")
-            redis = await redis_client.get_client()
-            redis_key = f"pending_order:{order_id}"
-            await redis.delete(redis_key)
-            return Order(**existing_order)
-        
-        redis = await redis_client.get_client()
-        redis_key = f"pending_order:{order_id}"
-        order_json = await redis.get(redis_key)
-        
-        if not order_json:
+
+        order, status = await self.complete_pending_order(
+            order_id, razorpay_order_id, razorpay_payment_id
+        )
+        if status == "not_found":
             raise ValueError(f"Order {order_id} not found in Redis")
-        
-        order_dict = json.loads(order_json)
-        order_dict["payment_status"] = "completed"
-        order_dict["razorpay_order_id"] = razorpay_order_id
-        order_dict["razorpay_payment_id"] = razorpay_payment_id
-        order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
-        
-        logs_collection = database[self.ORDER_LOGS_COLLECTION]
-        
-        try:
-            result = await orders_collection.insert_one(order_dict)
-            order_dict["_id"] = result.inserted_id
-            
-            # Convert log to dict for MongoDB
-            log_dict = {
-                "order_id": order_id,
-                "raw_data": order_dict.get("raw_order_log", {}),
-                "created_at": datetime.utcnow()
-            }
-            await logs_collection.insert_one(log_dict)
-            
-            await redis.delete(redis_key)
-            logger.info(f"Payment verified and order created: {order_id}")
-            # Convert shipping_address dict to DTO when creating Order
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            return Order(**order_dict)
-        except Exception as e:
-            logger.error(f"Failed to create order {order_id} in MongoDB: {e}")
-            await redis.delete(redis_key)
-            raise
+        return order

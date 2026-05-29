@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 from bson import ObjectId
 from src.database.connection import db
 from src.models.product import JewelryProduct, JewelryProductCreate
@@ -13,6 +14,7 @@ class ProductService:
         collection = database[self.COLLECTION_NAME]
         
         product_dict = product_data.model_dump()
+        product_dict["created_at"] = datetime.utcnow()
         result = await collection.insert_one(product_dict)
         product_dict["_id"] = result.inserted_id
         
@@ -43,6 +45,8 @@ class ProductService:
         limit: int = 50,
         active: Optional[bool] = None,
         category: Optional[str] = None,
+        is_best_seller: Optional[bool] = None,
+        is_curated: Optional[bool] = None,
         sort: Optional[str] = None,
         search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -54,6 +58,10 @@ class ProductService:
             query["active"] = active
         if category:
             query["category"] = category
+        if is_best_seller is not None:
+            query["is_best_seller"] = is_best_seller
+        if is_curated is not None:
+            query["is_curated"] = is_curated
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
@@ -64,7 +72,11 @@ class ProductService:
         
         cursor = collection.find(query)
         
-        if sort == "low":
+        if is_best_seller:
+            cursor = cursor.sort([("best_seller_order", 1), ("created_at", -1)])
+        elif is_curated:
+            cursor = cursor.sort([("curated_order", 1), ("created_at", -1)])
+        elif sort == "low":
             cursor = cursor.sort("price_inr", 1)
         elif sort == "high":
             cursor = cursor.sort("price_inr", -1)
@@ -80,6 +92,8 @@ class ProductService:
         self,
         active: Optional[bool] = None,
         category: Optional[str] = None,
+        is_best_seller: Optional[bool] = None,
+        is_curated: Optional[bool] = None,
         search: Optional[str] = None,
     ) -> int:
         database = await db.get_database()
@@ -90,6 +104,10 @@ class ProductService:
             query["active"] = active
         if category:
             query["category"] = category
+        if is_best_seller is not None:
+            query["is_best_seller"] = is_best_seller
+        if is_curated is not None:
+            query["is_curated"] = is_curated
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
