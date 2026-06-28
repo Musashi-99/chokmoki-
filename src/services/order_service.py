@@ -155,6 +155,40 @@ class OrderService:
         
         return True
     
+    @staticmethod
+    def _normalize_admin_payload(payload: dict) -> dict:
+        """Accept both snake_case admin payloads and camelCase storefront shapes."""
+        p = dict(payload)
+        if "userEmail" in p and "user_email" not in p:
+            p["user_email"] = p.pop("userEmail")
+        if "shippingAddress" in p and "shipping_address" not in p:
+            p["shipping_address"] = p.pop("shippingAddress")
+        if "specialMessage" in p and "special_message" not in p:
+            p["special_message"] = p.pop("specialMessage")
+        if "paymentMethod" in p and "payment_method" not in p:
+            p["payment_method"] = p.pop("paymentMethod")
+        items = p.get("items") or []
+        normalized_items = []
+        for raw in items:
+            item = dict(raw)
+            if "productId" in item and "product_id" not in item:
+                item["product_id"] = item.pop("productId")
+            if "productName" in item and "product_name" not in item:
+                item["product_name"] = item.pop("productName")
+            if "price" in item and "unit_price" not in item:
+                item["unit_price"] = item.pop("price")
+            if "total" in item and "total_price" not in item:
+                item["total_price"] = item.pop("total")
+            normalized_items.append(item)
+        p["items"] = normalized_items
+        pricing = p.get("pricing")
+        if isinstance(pricing, dict):
+            p.setdefault("subtotal", pricing.get("subtotal", 0))
+            p.setdefault("discount", pricing.get("discount", 0))
+            p.setdefault("shipping", pricing.get("shipping", 0))
+            p.setdefault("total_amount", pricing.get("total", 0))
+        return p
+    
     def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> PricingDTO:
         """Recalculate pricing from validated items - never trust user data"""
         subtotal = sum(item.total_price for item in validated_items)
@@ -229,6 +263,7 @@ class OrderService:
 
     async def create_from_admin(self, payload: dict) -> Order:
         """Create an order from the admin dashboard (manual / phone orders)."""
+        payload = self._normalize_admin_payload(payload)
         user_email = (payload.get("user_email") or "").strip()
         shipping_address = payload.get("shipping_address") or {}
         items_in = payload.get("items") or []
@@ -268,7 +303,7 @@ class OrderService:
             unit_price = float(raw.get("unit_price", product.price_inr))
             validated_items.append(
                 ValidatedOrderItem(
-                    product_id=str(product_id),
+                    product_id=str(product.id),
                     product_name=raw.get("product_name") or product.name,
                     variant=variant,
                     quantity=quantity,
@@ -488,9 +523,9 @@ class OrderService:
             {"$set": {"status": status.model_dump()}}
         )
         
-        if result.modified_count > 0:
-            return await self.get_by_id(order_id)
-        return None
+        if result.matched_count == 0:
+            return None
+        return await self.get_by_id(order_id)
     
     async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO]:
         """Validate order items and recalculate pricing - shared logic"""
@@ -503,16 +538,19 @@ class OrderService:
                 raise ValueError(f"Product {item.productId} not found")
             if not product.active:
                 raise ValueError(f"Product {item.productId} is not active")
-            if not self._validate_variant(product, item.variant):
+            variant = item.variant or {}
+            if not variant:
+                variant = {"default": "default"}
+            if not self._validate_variant(product, variant):
                 raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
             
             unit_price = float(product.price_inr)
             total_price = unit_price * item.quantity
             
             validated_items.append(ValidatedOrderItem(
-                product_id=item.productId,
+                product_id=str(product.id),
                 product_name=product.name,
-                variant=item.variant,
+                variant=variant,
                 quantity=item.quantity,
                 unit_price=unit_price,
                 total_price=total_price,

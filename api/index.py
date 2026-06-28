@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from bson import ObjectId
@@ -496,7 +496,14 @@ async def admin_update_order_status(
     try:
         status = OrderStatus(**payload.get("status", {}))
         service = OrderService()
-        updated = await service.update_status(order_id, status)
+        order = await service.get_by_id(order_id)
+        if not order:
+            order = await service.get_by_mongo_id(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        updated = await service.update_status(order.order_id, status)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -515,6 +522,8 @@ async def admin_get_order(order_id: str, email: str = Depends(require_admin)):
 
     service = OrderService()
     order = await service.get_by_id(order_id)
+    if not order:
+        order = await service.get_by_mongo_id(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return JSONResponse(content=json.loads(json.dumps(
@@ -610,13 +619,31 @@ async def admin_create_product(
         product = await ProductService().create(product_data)
     except HTTPException:
         raise
-    except Exception as e:
+    except ValueError as e:
+        if "already exists" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     if cache:
         await cache.delete_pattern("chokmoki:products:*")
         await cache.delete_pattern("chokmoki:product:*")
 
+    return JSONResponse(content=json.loads(json.dumps(
+        product.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@app.get("/api/admin/products/{product_id}")
+async def admin_get_product(product_id: str, email: str = Depends(require_admin)):
+    """Get a single product by MongoDB id."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    product = await ProductService().get_by_id(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
     return JSONResponse(content=json.loads(json.dumps(
         product.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -630,14 +657,22 @@ async def admin_update_product(
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
+    service = ProductService()
+    existing = await service.get_by_id(product_id)
     try:
-        updated = await ProductService().update(product_id, payload)
+        updated = await service.update(product_id, payload)
+    except ValueError as e:
+        if "already exists" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
 
     if cache:
+        if existing and existing.slug != updated.slug:
+            await cache.delete(f"chokmoki:product:{existing.slug}")
         await cache.delete_pattern("chokmoki:products:*")
         await cache.delete_pattern("chokmoki:product:*")
 
@@ -652,14 +687,18 @@ async def admin_delete_product(product_id: str, email: str = Depends(require_adm
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
+    service = ProductService()
+    existing = await service.get_by_id(product_id)
     try:
-        deleted = await ProductService().delete(product_id)
+        deleted = await service.delete(product_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Product not found")
 
     if cache:
+        if existing:
+            await cache.delete(f"chokmoki:product:{existing.slug}")
         await cache.delete_pattern("chokmoki:products:*")
         await cache.delete_pattern("chokmoki:product:*")
 
@@ -907,14 +946,20 @@ async def admin_update_hero_config(
     """Update a hero config by its MongoDB id."""
     if HeroConfigService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    service = HeroConfigService()
+    existing = await service.get_by_id(config_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Hero config not found")
+
     try:
-        data = HeroConfigCreate(**payload)
-        updated = await HeroConfigService().update(config_id, data.model_dump())
+        merged = {**existing.model_dump(), **payload}
+        data = HeroConfigCreate(**merged)
+        updated = await service.update(config_id, data.model_dump())
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
-        raise HTTPException(status_code=404, detail="Hero config not found")
+        updated = await service.get_by_id(config_id)
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -1314,6 +1359,14 @@ async def admin_upsert_policy_meta(
     )))
 
 
+@app.get("/api/admin/policies/meta")
+async def admin_get_policy_meta(email: str = Depends(require_admin)):
+    if PolicyContentService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    bundle = await PolicyContentService().get_admin_bundle()
+    return JSONResponse(content=_json_response_content(bundle.get("meta")))
+
+
 @app.put("/api/admin/policies/sections/{slug}")
 async def admin_upsert_policy_section(
     slug: str, payload: Dict[str, Any], email: str = Depends(require_admin)
@@ -1327,6 +1380,42 @@ async def admin_upsert_policy_section(
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
+
+
+@app.post("/api/admin/policies/sections")
+async def admin_create_policy_section(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if PolicyContentService is None or PolicySectionCreate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = PolicySectionCreate(**payload)
+        if not data.slug or not data.slug.strip():
+            raise HTTPException(status_code=400, detail="slug is required")
+        service = PolicyContentService()
+        if await service.slug_exists(data.slug.strip()):
+            raise HTTPException(status_code=409, detail="A section with this slug already exists")
+        created = await service.create_section(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(
+        status_code=201,
+        content=json.loads(json.dumps(created.model_dump(by_alias=True), cls=JSONEncoder)),
+    )
+
+
+@app.delete("/api/admin/policies/sections/{slug}")
+async def admin_delete_policy_section(
+    slug: str, email: str = Depends(require_admin)
+):
+    if PolicyContentService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    deleted = await PolicyContentService().delete_section_by_slug(slug)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Policy section not found")
+    return JSONResponse(content={"success": True, "slug": slug})
 
 
 # ========== Public: Home, Story, Journal, Inbox ==========
@@ -1613,12 +1702,26 @@ async def admin_upsert_journal_meta(
     )))
 
 
+@app.get("/api/admin/journal/meta")
+async def admin_get_journal_meta(email: str = Depends(require_admin)):
+    if BlogService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    meta = await BlogService().get_journal_admin()
+    return JSONResponse(content=_json_response_content(
+        meta.model_dump(by_alias=True) if meta else None
+    ))
+
+
 @app.post("/api/admin/blog-posts")
 async def admin_create_blog_post(
     payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     if BlogService is None or BlogPostCreate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+    if "published" in payload and "active" not in payload:
+        payload = {**payload, "active": payload["published"]}
+    if "content" in payload and "body" not in payload:
+        payload = {**payload, "body": payload["content"]}
     try:
         data = BlogPostCreate(**payload)
         created = await BlogService().create_post(data)

@@ -1,0 +1,12 @@
+services:
+  mongodb:
+    ports: !override
+      - "27018:27017"
+
+  redis:
+    ports: !override
+      - "6380:6379"
+
+  backend:
+    ports: !override
+      - "8001:8000"

@@ -83,10 +83,10 @@ class HeroConfigService:
             {"$set": update_data}
         )
         
-        if result.modified_count > 0:
-            await cache.delete_pattern(f"{self.CACHE_PREFIX}:*")
-            return await self.get_by_id(config_id)
-        return None
+        if result.matched_count == 0:
+            return None
+        await cache.delete_pattern(f"{self.CACHE_PREFIX}:*")
+        return await self.get_by_id(config_id)
     
     async def delete(self, config_id: str) -> bool:
         database = await db.get_database()
