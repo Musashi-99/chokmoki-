@@ -41,7 +41,7 @@ class PolicyContentService:
         )
         sections = [
             PolicySection(**doc).model_dump(by_alias=True)
-            for doc in await cursor.to_list(length=20)
+            for doc in await cursor.to_list(length=50)
             if doc.get("body", "").strip()
         ]
 
@@ -57,7 +57,7 @@ class PolicyContentService:
         cursor = database[self.SECTIONS_COLLECTION].find().sort("sort_order", 1)
         sections = [
             PolicySection(**doc).model_dump(by_alias=True)
-            for doc in await cursor.to_list(length=20)
+            for doc in await cursor.to_list(length=50)
         ]
         return {"meta": meta, "sections": sections}
 
@@ -129,6 +129,18 @@ class PolicyContentService:
             )
             return PolicySection(**doc) if doc else None
         return None
+
+    async def delete_section_by_slug(self, slug: str) -> bool:
+        database = await db.get_database()
+        result = await database[self.SECTIONS_COLLECTION].delete_one({"slug": slug})
+        if result.deleted_count > 0:
+            await self._invalidate()
+        return result.deleted_count > 0
+
+    async def slug_exists(self, slug: str) -> bool:
+        database = await db.get_database()
+        doc = await database[self.SECTIONS_COLLECTION].find_one({"slug": slug})
+        return doc is not None
 
     async def delete_section(self, section_id: str) -> bool:
         database = await db.get_database()
