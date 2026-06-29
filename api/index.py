@@ -1765,13 +1765,21 @@ async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admi
 async def admin_get_inbox(
     skip: int = 0,
     limit: int = 100,
+    contacts_skip: int | None = None,
+    contacts_limit: int | None = None,
+    newsletter_skip: int | None = None,
+    newsletter_limit: int | None = None,
     email: str = Depends(require_admin),
 ):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     service = InboxService()
-    contacts = await service.list_contacts(skip=skip, limit=limit)
-    newsletter = await service.list_newsletter(skip=skip, limit=limit)
+    cs = contacts_skip if contacts_skip is not None else skip
+    cl = contacts_limit if contacts_limit is not None else limit
+    ns = newsletter_skip if newsletter_skip is not None else skip
+    nl = newsletter_limit if newsletter_limit is not None else limit
+    contacts = await service.list_contacts(skip=cs, limit=cl)
+    newsletter = await service.list_newsletter(skip=ns, limit=nl)
     return JSONResponse(content=_json_response_content({
         "contacts": contacts,
         "contacts_count": await service.count_contacts(),
