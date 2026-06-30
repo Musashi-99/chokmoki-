@@ -1,4 +1,8 @@
 from typing import Dict, Any, Optional
+
+from pydantic import BaseModel, ValidationError
+
+from src.cqrs.param_models import PARAM_MODELS
 from src.resources.products.queries import (
     ProductListQuery,
     ProductGetQuery,
@@ -73,6 +77,9 @@ from src.resources.sync_key.queries import (
     SyncKeyGetQuery,
 )
 from src.plugins.admin_auth import validate_admin_key
+from src.services.order_service import OrderService
+from src.services.shipping_address_service import ShippingAddressService
+from src.security.exceptions import AuthorizationError
 
 
 class CQRSRouter:
@@ -101,7 +108,7 @@ class CQRSRouter:
         "rating.summary": RatingSummaryQuery,
         "rating.canRate": RatingCanRateQuery,
     }
-    
+
     MUTATIONS: Dict[str, Any] = {
         "product.create": ProductCreateMutation,
         "product.update": ProductUpdateMutation,
@@ -122,7 +129,7 @@ class CQRSRouter:
         "rating.create": RatingCreateMutation,
         "newsletter.subscribe": NewsletterSubscribeMutation,
     }
-    
+
     ADMIN_REQUIRED_OPERATIONS = {
         "product.create",
         "product.update",
@@ -130,48 +137,128 @@ class CQRSRouter:
         "category.create",
         "category.update",
         "category.delete",
+        "order.getLog",
+        "order.updateStatus",
     }
-    
+
     @classmethod
-    def _check_admin_auth(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> None:
+    async def _is_admin(cls, admin_key: Optional[str]) -> bool:
+        return bool(admin_key and await validate_admin_key(admin_key))
+
+    @classmethod
+    async def _require_admin(cls, operation: str, admin_key: Optional[str]) -> None:
+        if not await cls._is_admin(admin_key):
+            raise AuthorizationError(f"Admin authentication required for {operation}")
+
+    @classmethod
+    def _validate_params(cls, operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        model_cls = PARAM_MODELS.get(operation)
+        if model_cls is None:
+            return params
+        try:
+            validated: BaseModel = model_cls.model_validate(params)
+        except ValidationError as exc:
+            raise ValueError("Invalid request parameters") from exc
+        return validated.model_dump(by_alias=True)
+
+    @classmethod
+    def _normalized_email(cls, params: Dict[str, Any], key: str) -> str:
+        value = params.get(key)
+        if not isinstance(value, str):
+            return ""
+        return value.strip().lower()
+
+    @classmethod
+    async def _check_order_get_access(
+        cls, params: Dict[str, Any], admin_key: Optional[str]
+    ) -> None:
+        if await cls._is_admin(admin_key):
+            return
+
+        user_email = cls._normalized_email(params, "userEmail")
+        order_id = params.get("id")
+        if not order_id:
+            raise ValueError("Order ID is required")
+        if not user_email:
+            raise AuthorizationError("Authentication required to view this order")
+
+        order = await OrderService().get_by_id(order_id)
+        if not order:
+            raise ValueError("Order not found")
+        if order.user_email.lower() != user_email:
+            raise AuthorizationError("Authentication required to view this order")
+
+    @classmethod
+    async def _check_shipping_address_get_access(
+        cls, params: Dict[str, Any], admin_key: Optional[str]
+    ) -> None:
+        if await cls._is_admin(admin_key):
+            return
+
+        email = cls._normalized_email(params, "email")
+        address_id = params.get("id")
+        if not address_id:
+            raise ValueError("Address ID is required")
+        if not email:
+            raise AuthorizationError("Authentication required to view this address")
+
+        address = await ShippingAddressService().get_by_id(address_id)
+        if not address:
+            raise ValueError("Address not found")
+        if address.email.lower() != email:
+            raise AuthorizationError("Authentication required to view this address")
+
+    @classmethod
+    async def _authorize(
+        cls, operation: str, params: Dict[str, Any], admin_key: Optional[str]
+    ) -> None:
         if operation in cls.ADMIN_REQUIRED_OPERATIONS:
-            if not admin_key or not validate_admin_key(admin_key):
-                raise ValueError("Admin authentication required for this operation")
-        
+            await cls._require_admin(operation, admin_key)
+
         if operation == "order.list":
-            user_email = params.get("userEmail")
+            user_email = cls._normalized_email(params, "userEmail")
             if not user_email:
-                if not admin_key or not validate_admin_key(admin_key):
-                    raise ValueError("Admin authentication required to list all orders")
-        
+                await cls._require_admin(operation, admin_key)
+
+        if operation == "shippingAddress.get":
+            await cls._check_shipping_address_get_access(params, admin_key)
+
         if operation == "contact.list":
-            if not admin_key or not validate_admin_key(admin_key):
-                raise ValueError("Admin authentication required to list contacts")
-        
-        # Analytics queries require admin authentication (but mutations don't)
-        if operation.startswith("analytics.") and operation not in ["analytics.trackEvent", "analytics.trackMetric"]:
-            if not admin_key or not validate_admin_key(admin_key):
-                raise ValueError("Admin authentication required for analytics operations")
-    
+            await cls._require_admin(operation, admin_key)
+
+        if operation.startswith("analytics.") and operation not in {
+            "analytics.trackEvent",
+            "analytics.trackMetric",
+        }:
+            await cls._require_admin(operation, admin_key)
+
+        if operation == "order.get":
+            await cls._check_order_get_access(params, admin_key)
+
     @classmethod
-    async def execute_query(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_query(
+        cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         if operation not in cls.QUERIES:
             raise ValueError(f"Unknown query operation: {operation}")
-        
-        cls._check_admin_auth(operation, params, admin_key)
-        
+
+        validated_params = cls._validate_params(operation, params)
+        await cls._authorize(operation, validated_params, admin_key)
+
         query_class = cls.QUERIES[operation]
         query = query_class()
-        return await query.execute(params)
-    
+        return await query.execute(validated_params)
+
     @classmethod
-    async def execute_mutation(cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_mutation(
+        cls, operation: str, params: Dict[str, Any], admin_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         if operation not in cls.MUTATIONS:
             raise ValueError(f"Unknown mutation operation: {operation}")
-        
-        cls._check_admin_auth(operation, params, admin_key)
-        
+
+        validated_params = cls._validate_params(operation, params)
+        await cls._authorize(operation, validated_params, admin_key)
+
         mutation_class = cls.MUTATIONS[operation]
         mutation = mutation_class()
-        return await mutation.execute(params)
-
+        return await mutation.execute(validated_params)

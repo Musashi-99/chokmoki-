@@ -68,6 +68,7 @@ class JewelryProduct(BaseModel):
     weight_grams: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"
+    stock_qty: Optional[int] = None
     active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # Backward-compatible fields for order system
@@ -105,7 +106,39 @@ class JewelryProductCreate(BaseModel):
     weight_grams: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"
+    stock_qty: Optional[int] = None
     active: bool = True
+
+
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class JewelryProductUpdate(StrictUpdateModel):
+    slug: Optional[str] = None
+    name: Optional[str] = None
+    price_inr: Optional[int] = None
+    category: Optional[str] = None
+    collection: Optional[str] = None
+    thumbnail: Optional[str] = None
+    gallery: Optional[List[str]] = None
+    material: Optional[str] = None
+    craftsmanship: Optional[str] = None
+    shipping_details: Optional[str] = None
+    care_guide: Optional[str] = None
+    returns_policy: Optional[str] = None
+    authenticity_details: Optional[str] = None
+    description: Optional[str] = None
+    story: Optional[str] = None
+    sizes: Optional[List[str]] = None
+    is_best_seller: Optional[bool] = None
+    is_curated: Optional[bool] = None
+    best_seller_order: Optional[int] = None
+    curated_order: Optional[int] = None
+    weight_grams: Optional[float] = None
+    purity: Optional[str] = None
+    stock_status: Optional[str] = None
+    stock_qty: Optional[int] = None
+    active: Optional[bool] = None
 
 
 class Product(BaseModel):

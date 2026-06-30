@@ -46,6 +46,16 @@ class PolicySectionCreate(BaseModel):
     active: bool = True
 
 
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class PolicySectionUpdate(StrictUpdateModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+    sort_order: Optional[int] = None
+    active: Optional[bool] = None
+
+
 class PolicyPageMetaUpdate(BaseModel):
     page_eyebrow: Optional[str] = None
     page_title: Optional[str] = None

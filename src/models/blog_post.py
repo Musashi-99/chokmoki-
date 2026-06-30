@@ -42,6 +42,23 @@ class BlogPostCreate(BaseModel):
     active: bool = True
 
 
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class BlogPostUpdate(StrictUpdateModel):
+    slug: Optional[str] = None
+    title: Optional[str] = None
+    excerpt: Optional[str] = None
+    image_url: Optional[str] = None
+    date_label: Optional[str] = None
+    read_time: Optional[str] = None
+    body: Optional[str] = None
+    link_to: Optional[str] = None
+    featured: Optional[bool] = None
+    sort_order: Optional[int] = None
+    active: Optional[bool] = None
+
+
 class JournalPageSettings(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     settings_key: str = "main"

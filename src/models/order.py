@@ -26,7 +26,7 @@ class OrderItemInput(BaseModel):
     productId: str
     productName: str
     variant: Dict[str, str]  # Keep as dict for variant flexibility
-    quantity: int
+    quantity: int = Field(ge=1)
     price: float
     total: float
     size: Optional[str] = None
@@ -53,7 +53,7 @@ class ValidatedOrderItem(BaseModel):
     product_id: str
     product_name: str
     variant: Dict[str, str]  # Keep as dict for variant flexibility
-    quantity: int
+    quantity: int = Field(ge=1)
     unit_price: float
     total_price: float
     size: Optional[str] = None

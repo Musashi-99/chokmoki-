@@ -4,6 +4,7 @@ from bson import ObjectId
 from src.database.connection import db
 from src.models.product import JewelryProduct, JewelryProductCreate
 from src.plugins.logger import logger
+from src.utils.regex_safe import escape_mongo_regex
 
 
 class ProductService:
@@ -112,11 +113,12 @@ class ProductService:
         if is_curated is not None:
             query["is_curated"] = is_curated
         if search:
+            safe = escape_mongo_regex(search)
             query["$or"] = [
-                {"name": {"$regex": search, "$options": "i"}},
-                {"description": {"$regex": search, "$options": "i"}},
-                {"material": {"$regex": search, "$options": "i"}},
-                {"slug": {"$regex": search, "$options": "i"}},
+                {"name": {"$regex": safe, "$options": "i"}},
+                {"description": {"$regex": safe, "$options": "i"}},
+                {"material": {"$regex": safe, "$options": "i"}},
+                {"slug": {"$regex": safe, "$options": "i"}},
             ]
         
         cursor = collection.find(query)
@@ -158,11 +160,12 @@ class ProductService:
         if is_curated is not None:
             query["is_curated"] = is_curated
         if search:
+            safe = escape_mongo_regex(search)
             query["$or"] = [
-                {"name": {"$regex": search, "$options": "i"}},
-                {"description": {"$regex": search, "$options": "i"}},
-                {"material": {"$regex": search, "$options": "i"}},
-                {"slug": {"$regex": search, "$options": "i"}},
+                {"name": {"$regex": safe, "$options": "i"}},
+                {"description": {"$regex": safe, "$options": "i"}},
+                {"material": {"$regex": safe, "$options": "i"}},
+                {"slug": {"$regex": safe, "$options": "i"}},
             ]
         
         return await collection.count_documents(query)

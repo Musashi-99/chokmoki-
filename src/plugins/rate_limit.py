@@ -1,177 +1,164 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Callable, Optional
-import re
-import json as json_lib
-from src.database.redis_connection import redis_client
+
 from src.config import settings
+from src.database.redis_connection import redis_client
+from src.plugins.rate_limit_config import (
+    ResolvedRateLimit,
+    load_rate_limit_rules,
+    resolve_rate_limits,
+)
+from src.security.client_ip import get_client_ip, should_fail_closed_for_path
+from src.plugins.token_bucket import TokenBucketLimiter
 
 
-def parse_time_to_seconds(time_str: str) -> int:
-    """Parse time string (e.g., '3m', '24h', '30s') to seconds"""
-    if not time_str:
-        return 60
-    
-    time_str = time_str.strip().lower()
-    
-    match = re.match(r'^(\d+)([smhd])$', time_str)
-    if not match:
-        raise ValueError(f"Invalid time format: {time_str}. Use format like '3m', '24h', '30s'")
-    
-    value, unit = match.groups()
-    value = int(value)
-    
-    multipliers = {
-        's': 1,
-        'm': 60,
-        'h': 60 * 60,
-        'd': 24 * 60 * 60
-    }
-    
-    return value * multipliers[unit]
+def _extract_admin_email(request: Request) -> Optional[str]:
+    authorization = request.headers.get("Authorization") or ""
+    token: Optional[str] = None
+    if authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get("chokmoki_admin_access")
 
+    if not token:
+        return None
 
-def get_client_ip(request: Request) -> str:
-    """Extract client IP from request, handling proxies"""
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-    
-    if request.client:
-        return request.client.host
-    
-    return "unknown"
+    try:
+        from src.services.admin_auth_service import AdminAuthService
+
+        payload = AdminAuthService()._decode_token(token)
+        if payload and payload.get("type") == "admin_access":
+            return payload.get("sub")
+    except Exception:
+        return None
+    return None
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    ORDER_OPERATIONS = {"order.create", "order.initiate"}
-    
     def __init__(self, app):
         super().__init__(app)
-        self.normal_get_limit = settings.rate_limit_normal_get
-        self.normal_post_limit = settings.rate_limit_normal_post
-        self.normal_time_window = parse_time_to_seconds(settings.rate_limit_normal_time)
-        self.order_max_limit = settings.rate_limit_order_max
-        self.order_time_window = parse_time_to_seconds(settings.rate_limit_order_time)
-    
+        self._limiter = TokenBucketLimiter()
+        self._rules = load_rate_limit_rules()
+
+    def reload_rules(self) -> None:
+        self._rules = load_rate_limit_rules()
+
     async def dispatch(self, request: Request, call_next: Callable):
         if not settings.rate_limit_enabled:
             return await call_next(request)
-        
-        if request.url.path in ["/health", "/webhook/razorpay"]:
-            return await call_next(request)
-        
-        client_ip = get_client_ip(request)
-        if client_ip == "unknown":
-            return await call_next(request)
-        
+
+        path = request.url.path
+        method = request.method.upper()
+
         try:
-            redis = await redis_client.get_client()
-            
-            if request.method == "POST" and request.url.path == "/":
-                operation = await self._extract_operation(request)
-                
-                if operation in self.ORDER_OPERATIONS:
-                    allowed = await self._check_order_rate_limit(redis, client_ip)
-                    if not allowed:
-                        return JSONResponse(
-                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                            content={
-                                "error": "Rate limit exceeded",
-                                "message": f"Maximum {self.order_max_limit} order placements allowed per {settings.rate_limit_order_time}",
-                                "retry_after": self.order_time_window
-                            }
-                        )
+            operation, body_fields = await self._extract_cqrs_context(request, path, method)
+            admin_email = _extract_admin_email(request)
+            ip = get_client_ip(request)
+
+            if path == "/api/products" and method == "GET":
+                if not request.query_params.get("search"):
+                    checks: List[Tuple[str, Any]] = []
                 else:
-                    allowed = await self._check_normal_rate_limit(redis, client_ip, "POST")
-                    if not allowed:
-                        return JSONResponse(
-                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                            content={
-                                "error": "Rate limit exceeded",
-                                "message": f"Maximum {self.normal_post_limit} POST requests allowed per {settings.rate_limit_normal_time}",
-                                "retry_after": self.normal_time_window
-                            }
-                        )
-            elif request.method == "GET":
-                allowed = await self._check_normal_rate_limit(redis, client_ip, "GET")
-                if not allowed:
-                    return JSONResponse(
-                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                        content={
-                            "error": "Rate limit exceeded",
-                            "message": f"Maximum {self.normal_get_limit} GET requests allowed per {settings.rate_limit_normal_time}",
-                            "retry_after": self.normal_time_window
-                        }
+                    checks = self._build_checks(
+                        method, path, operation, ip, admin_email, body_fields
                     )
-            
+            else:
+                checks = self._build_checks(
+                    method, path, operation, ip, admin_email, body_fields
+                )
+
+            if checks:
+                redis = await redis_client.get_client()
+                _ = redis  # ensure connectivity before token checks
+                result = await self._limiter.check_all(checks)
+                if not result.allowed:
+                    retry_seconds = max(1, int(result.retry_after_ms / 1000))
+                    return self._rate_limit_response(retry_seconds)
+
             return await call_next(request)
-        
-        except Exception as e:
+
+        except Exception:
+            if should_fail_closed_for_path(path):
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "error": "Rate limit service unavailable",
+                        "message": "Request blocked because rate limiting could not be verified",
+                    },
+                )
             return await call_next(request)
-    
-    async def _extract_operation(self, request: Request) -> Optional[str]:
-        """Extract operation from request body and preserve body for endpoint"""
+
+    def _build_checks(
+        self,
+        method: str,
+        path: str,
+        operation: Optional[str],
+        ip: str,
+        admin_email: Optional[str],
+        body_fields: Dict[str, Any],
+    ) -> List[Tuple[str, Any]]:
+        resolved: List[ResolvedRateLimit] = resolve_rate_limits(
+            self._rules,
+            method=method,
+            path=path,
+            operation=operation,
+            ip=ip,
+            admin_email=admin_email,
+            body_fields=body_fields,
+        )
+        return [(item.redis_key, item.bucket) for item in resolved]
+
+    def _rate_limit_response(self, retry_after: int) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+                "retry_after": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    async def _extract_cqrs_context(
+        self, request: Request, path: str, method: str
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        if method not in {"POST", "PUT", "PATCH"}:
+            return None, {}
+
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "application/json" not in content_type and path != "/":
+            return None, {}
+
+        if path != "/" and not path.startswith("/api/"):
+            return None, {}
+
         try:
             body_bytes = await request.body()
             if not body_bytes:
-                return None
-            
-            data = json_lib.loads(body_bytes)
-            operation = data.get("operation")
-            
+                return None, {}
+
+            data = json.loads(body_bytes)
+            operation = data.get("operation") if path == "/" else None
+            params = data.get("params", {}) if path == "/" else data
+
+            fields: Dict[str, Any] = {}
+            if isinstance(params, dict):
+                fields.update(params)
+            if isinstance(data, dict):
+                for key in ("email", "userEmail", "user_email"):
+                    if key in data:
+                        fields[key] = data[key]
+
             async def receive() -> dict:
                 return {"type": "http.request", "body": body_bytes}
-            
+
             request._receive = receive
-            return operation
-        except:
-            return None
-    
-    async def _check_normal_rate_limit(self, redis, client_ip: str, method: str) -> bool:
-        """Check normal rate limit using token bucket algorithm"""
-        limit = self.normal_get_limit if method == "GET" else self.normal_post_limit
-        window = self.normal_time_window
-        
-        key = f"rate_limit:normal:{method}:{client_ip}"
-        
-        current = await redis.get(key)
-        if current is None:
-            await redis.setex(key, window, 1)
-            return True
-        
-        count = int(current)
-        if count >= limit:
-            return False
-        
-        await redis.incr(key)
-        ttl = await redis.ttl(key)
-        if ttl == -1:
-            await redis.expire(key, window)
-        
-        return True
-    
-    async def _check_order_rate_limit(self, redis, client_ip: str) -> bool:
-        """Check order placement rate limit using token bucket algorithm"""
-        key = f"rate_limit:order:{client_ip}"
-        
-        current = await redis.get(key)
-        if current is None:
-            await redis.setex(key, self.order_time_window, 1)
-            return True
-        
-        count = int(current)
-        if count >= self.order_max_limit:
-            return False
-        
-        await redis.incr(key)
-        ttl = await redis.ttl(key)
-        if ttl == -1:
-            await redis.expire(key, self.order_time_window)
-        
-        return True
+            return operation, fields
+        except Exception:
+            return None, {}
