@@ -29,3 +29,15 @@ class TestimonialCreate(BaseModel):
     text: str = Field(..., max_length=2000)
     location: str = ""
     active: bool = True
+
+
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class TestimonialUpdate(StrictUpdateModel):
+    name: Optional[str] = None
+    initials: Optional[str] = None
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    text: Optional[str] = Field(default=None, max_length=2000)
+    location: Optional[str] = None
+    active: Optional[bool] = None

@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request, Header, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, UploadFile, File, Form, Cookie
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
@@ -11,6 +11,7 @@ import sys
 import platform
 import asyncio
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -26,22 +27,31 @@ try:
     from src.services.telegram_service import TelegramService
     from src.plugins.logger import logger
     from src.config import settings
+    from src.security.error_handling import register_exception_handlers
+    from src.security.mass_assignment import build_update_payload, require_update_fields
+    from src.security.idempotency import IdempotencyConflictError, IdempotencyService
+    from src.services.fraud_review_service import FraudReviewService
+    from src.middleware.correlation_id import CorrelationIdMiddleware
     from src.plugins.rate_limit import RateLimitMiddleware
+    from src.plugins.admin_deps import require_admin, require_permission
+    from src.plugins.admin_audit_middleware import AdminAuditMiddleware
+    from src.plugins.admin_cookies import set_auth_cookies, clear_auth_cookies
     from src.services.product_service import ProductService
     from src.services.category_service import CategoryService
-    from src.models.product import JewelryProductCreate
-    from src.models.category import JewelryCategoryCreate
+    from src.models.product import JewelryProductCreate, JewelryProductUpdate
+    from src.models.category import JewelryCategoryCreate, JewelryCategoryUpdate
     from src.models.order import OrderCreateInput, OrderStatus
+    from src.models.admin_rbac import AdminRole
     from src.services.admin_auth_service import AdminAuthService
     from src.services.r2_service import R2Service
     from src.utils.upload_validation import UploadValidationError, validate_upload
-    from src.models.testimonial import TestimonialCreate
-    from src.models.hero_config import HeroConfigCreate
+    from src.models.testimonial import TestimonialCreate, TestimonialUpdate
+    from src.models.hero_config import HeroConfigCreate, HeroConfigUpdate
     from src.services.testimonial_service import TestimonialService
     from src.services.hero_config_service import HeroConfigService
-    from src.models.site_asset import SiteAssetCreate
-    from src.models.faq_item import FAQItemCreate
-    from src.models.collection_slide import CollectionSlideCreate
+    from src.models.site_asset import SiteAssetCreate, SiteAssetUpdate
+    from src.models.faq_item import FAQItemCreate, FAQItemUpdate
+    from src.models.collection_slide import CollectionSlideCreate, CollectionSlideUpdate
     from src.services.site_asset_service import SiteAssetService
     from src.services.faq_item_service import FAQItemService
     from src.services.collection_slide_service import CollectionSlideService
@@ -50,7 +60,7 @@ try:
     from src.services.policy_content_service import PolicyContentService
     from src.models.studio_settings import StudioSettingsUpdate
     from src.models.shop_page_settings import ShopPageSettingsUpdate
-    from src.models.policy_content import PolicyPageMetaUpdate, PolicySectionCreate
+    from src.models.policy_content import PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate
     from src.services.home_page_settings_service import HomePageSettingsService
     from src.services.story_page_settings_service import StoryPageSettingsService
     from src.services.blog_service import BlogService
@@ -61,13 +71,16 @@ try:
     from src.services.product_page_settings_service import ProductPageSettingsService
     from src.models.home_page_settings import HomePageSettingsUpdate
     from src.models.story_page_settings import StoryPageSettingsUpdate
-    from src.models.blog_post import BlogPostCreate, JournalPageSettingsUpdate
+    from src.models.blog_post import BlogPostCreate, BlogPostUpdate, JournalPageSettingsUpdate
     from src.models.navigation_settings import NavigationSettingsUpdate
     from src.models.contact_page_settings import ContactPageSettingsUpdate
     from src.models.history_page_settings import HistoryPageSettingsUpdate
     from src.models.product_page_settings import ProductPageSettingsUpdate
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
     from src.services.cache_service import cache
+    from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
+    from src.security.client_ip import get_client_ip
+    from src.plugins.metrics import render_metrics
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -79,11 +92,18 @@ except Exception as e:
     logger = None
     settings = None
     RateLimitMiddleware = None
+    require_admin = None
+    require_permission = None
+    AdminAuditMiddleware = None
+    set_auth_cookies = None
+    clear_auth_cookies = None
     ProductService = None
     CategoryService = None
     JewelryProductCreate = None
     JewelryCategoryCreate = None
     OrderCreateInput = None
+    OrderStatus = None
+    AdminRole = None
     AdminAuthService = None
     R2Service = None
     TestimonialCreate = None
@@ -122,6 +142,20 @@ except Exception as e:
     ContactSubmissionCreate = None
     NewsletterSubscribeCreate = None
     cache = None
+    AuthorizationError = None
+    MFACodeRequired = None
+    AccountLockedError = None
+    get_client_ip = None
+    render_metrics = None
+    register_exception_handlers = None
+    CorrelationIdMiddleware = None
+
+
+def _cors_middleware_kwargs() -> Dict[str, Any]:
+    from src.security.cors_policy import build_cors_middleware_kwargs
+
+    origins = settings.cors_origins_list if settings else ["http://localhost:5173"]
+    return build_cors_middleware_kwargs(origins)
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -148,6 +182,7 @@ class APIRequest(BaseModel):
     operation: str
     params: Dict[str, Any] = {}
     adminKey: Optional[str] = None
+    idempotencyKey: Optional[str] = None
 
 
 @asynccontextmanager
@@ -192,17 +227,25 @@ async def lifespan(app: FastAPI):
 # Export THIS ONLY
 app = FastAPI(lifespan=lifespan)
 
+if logger is not None:
+    register_exception_handlers(app, logger)
+
 
 if RateLimitMiddleware:
     app.add_middleware(RateLimitMiddleware)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if AdminAuditMiddleware:
+    app.add_middleware(AdminAuditMiddleware)
+
+app.add_middleware(CORSMiddleware, **_cors_middleware_kwargs())
+
+if CorrelationIdMiddleware:
+    app.add_middleware(CorrelationIdMiddleware)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 
 # ========== REST API Endpoints for Frontend ==========
@@ -327,30 +370,66 @@ async def api_get_category(slug: str):
 
 
 @app.post("/api/orders")
-async def api_create_order(payload: Dict[str, Any]):
+async def api_create_order(request: Request, payload: Dict[str, Any]):
     """Create a new order (public endpoint)."""
     if OrderService is None or OrderCreateInput is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    idem_key = request.headers.get("Idempotency-Key") or payload.get("idempotencyKey")
+    if (
+        settings
+        and settings.is_production
+        and settings.idempotency_required_in_production
+        and not idem_key
+    ):
+        raise HTTPException(status_code=400, detail="Idempotency-Key is required")
+
+    idem_service = IdempotencyService()
+    idem_storage_key = None
+    idem_fingerprint = None
+    if idem_key:
+        try:
+            idem_storage_key = idem_service.normalize_key(idem_key)
+            idem_fingerprint = idem_service.fingerprint(scope="order.create", payload=payload)
+            cached = await idem_service.begin(idem_storage_key, idem_fingerprint)
+            if cached:
+                return JSONResponse(status_code=cached.status_code, content=cached.body)
+        except IdempotencyConflictError:
+            raise HTTPException(status_code=409, detail="Idempotency-Key reused with different payload")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         order_data = OrderCreateInput(**payload)
         service = OrderService()
         order = await service.create(order_data)
     except HTTPException:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
         raise
     except ValueError as e:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
         if logger:
             logger.error(f"Order creation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+        raise HTTPException(status_code=500) from e
 
-    return JSONResponse(
-        content=json.loads(json.dumps(
-            order.model_dump(by_alias=True),
-            cls=JSONEncoder
-        ))
-    )
+    response_body = json.loads(json.dumps(
+        order.model_dump(by_alias=True),
+        cls=JSONEncoder
+    ))
+    if idem_storage_key and idem_fingerprint:
+        await idem_service.store(
+            idem_storage_key,
+            idem_fingerprint,
+            status_code=200,
+            body=response_body,
+        )
+    return JSONResponse(content=response_body)
 
 
 # ========== Admin Panel: Auth, Media Upload & Management ==========
@@ -358,37 +437,113 @@ async def api_create_order(payload: Dict[str, Any]):
 class AdminLoginRequest(BaseModel):
     email: str
     password: str
-
-
-async def require_admin(authorization: Optional[str] = Header(None)) -> str:
-    """Validate the admin JWT from the 'Authorization: Bearer <token>' header."""
-    if AdminAuthService is None:
-        raise HTTPException(status_code=500, detail="Server not initialized")
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing admin token")
-    token = authorization.split(" ", 1)[1].strip()
-    email = AdminAuthService().verify_token(token)
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid or expired admin token")
-    return email
+    totp_code: Optional[str] = None
 
 
 @app.post("/api/admin/login")
-async def admin_login(payload: AdminLoginRequest):
-    """Authenticate the super admin and return a JWT."""
+async def admin_login(payload: AdminLoginRequest, request: Request):
+    """Authenticate admin; sets httpOnly session cookies."""
     if AdminAuthService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
-    token = await AdminAuthService().authenticate(payload.email, payload.password)
-    if not token:
+    client_ip = get_client_ip(request) if get_client_ip else "unknown"
+
+    try:
+        result = await AdminAuthService().authenticate(
+            payload.email,
+            payload.password,
+            payload.totp_code,
+            client_ip=client_ip,
+        )
+    except MFACodeRequired:
+        raise HTTPException(status_code=401, detail="MFA code required")
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    if not result:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"token": token, "email": payload.email}
+
+    body = {
+        "email": result.email,
+        "role": result.role,
+        "expires_in": result.tokens.expires_in,
+        "mfa_enabled": settings.admin_mfa_enabled if settings else False,
+    }
+    if settings and settings.admin_legacy_bearer_enabled:
+        body["token"] = result.tokens.access_token
+
+    response = JSONResponse(content=body)
+    if set_auth_cookies:
+        set_auth_cookies(response, result.tokens)
+    return response
+
+
+@app.post("/api/admin/refresh")
+async def admin_refresh(
+    refresh_cookie: Optional[str] = Cookie(None, alias="chokmoki_admin_refresh"),
+):
+    """Rotate refresh token and issue a new access token."""
+    if AdminAuthService is None or not refresh_cookie:
+        raise HTTPException(status_code=401, detail="Missing refresh token")
+
+    tokens = await AdminAuthService().refresh(refresh_cookie)
+    if not tokens:
+        response = JSONResponse(status_code=401, content={"detail": "Invalid refresh token"})
+        if clear_auth_cookies:
+            clear_auth_cookies(response)
+        return response
+
+    body = {"expires_in": tokens.expires_in}
+    if settings and settings.admin_legacy_bearer_enabled:
+        body["token"] = tokens.access_token
+
+    response = JSONResponse(content=body)
+    if set_auth_cookies:
+        set_auth_cookies(response, tokens)
+    return response
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(
+    request: Request,
+    refresh_cookie: Optional[str] = Cookie(None, alias="chokmoki_admin_refresh"),
+):
+    """Invalidate the current admin session."""
+    if AdminAuthService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    principal = getattr(request.state, "admin_principal", None)
+    auth_service = AdminAuthService()
+
+    if principal is None:
+        authorization = request.headers.get("Authorization")
+        token = None
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+        access_cookie = request.cookies.get("chokmoki_admin_access")
+        verify_token = token or access_cookie
+        if verify_token:
+            principal = await auth_service.verify_access_token(verify_token)
+
+    await auth_service.logout(principal, refresh_cookie)
+    response = JSONResponse(content={"success": True})
+    if clear_auth_cookies:
+        clear_auth_cookies(response)
+    return response
 
 
 @app.get("/api/admin/me")
-async def admin_me(email: str = Depends(require_admin)):
-    """Return the currently authenticated admin (used to verify a stored token)."""
-    return {"email": email}
+async def admin_me(request: Request, email: str = Depends(require_admin)):
+    """Return the currently authenticated admin."""
+    principal = getattr(request.state, "admin_principal", None)
+    return {
+        "email": email,
+        "role": principal.role if principal else (AdminRole.SUPER_ADMIN.value if AdminRole else "super_admin"),
+        "mfa_enabled": settings.admin_mfa_enabled if settings else False,
+    }
 
 
 @app.post("/api/admin/upload")
@@ -401,7 +556,7 @@ async def admin_upload(
     if R2Service is None:
         raise HTTPException(status_code=500, detail="R2 storage not initialized")
 
-    safe_folder = "".join(c for c in folder if c.isalnum() or c in ("-", "_", "/")) or "products"
+    safe_folder = "".join(c for c in folder if c.isalnum() or c in ("-", "_")) or "products"
     service = R2Service()
     urls: List[str] = []
     try:
@@ -425,7 +580,7 @@ async def admin_upload(
     except Exception as e:
         if logger:
             logger.error(f"Admin upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        raise HTTPException(status_code=500) from e
 
     return {"urls": urls}
 
@@ -476,7 +631,7 @@ async def admin_create_order(
     except Exception as e:
         if logger:
             logger.error(f"Admin order creation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+        raise HTTPException(status_code=500) from e
 
     return JSONResponse(
         content=json.loads(
@@ -660,7 +815,9 @@ async def admin_update_product(
     service = ProductService()
     existing = await service.get_by_id(product_id)
     try:
-        updated = await service.update(product_id, payload)
+        update_data = build_update_payload(JewelryProductUpdate, payload)
+        require_update_fields(update_data)
+        updated = await service.update(product_id, update_data)
     except ValueError as e:
         if "already exists" in str(e):
             raise HTTPException(status_code=409, detail=str(e))
@@ -748,6 +905,14 @@ _CATEGORY_UPDATE_FIELDS = frozenset({
 })
 
 
+def _category_update_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if JewelryCategoryUpdate is None:
+        return {k: v for k, v in payload.items() if k in _CATEGORY_UPDATE_FIELDS}
+    update_data = build_update_payload(JewelryCategoryUpdate, payload)
+    require_update_fields(update_data)
+    return update_data
+
+
 @app.put("/api/admin/categories/{category_id}")
 async def admin_update_category(
     category_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
@@ -756,9 +921,10 @@ async def admin_update_category(
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
-    update_data = {k: v for k, v in payload.items() if k in _CATEGORY_UPDATE_FIELDS}
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No valid fields to update")
+    try:
+        update_data = _category_update_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         updated = await CategoryService().update(category_id, update_data)
@@ -871,11 +1037,13 @@ async def admin_update_testimonial(
     testimonial_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Update a testimonial by its MongoDB id."""
-    if TestimonialService is None:
+    if TestimonialService is None or TestimonialUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     try:
-        updated = await TestimonialService().update(testimonial_id, payload)
+        update_data = build_update_payload(TestimonialUpdate, payload)
+        require_update_fields(update_data)
+        updated = await TestimonialService().update(testimonial_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -944,7 +1112,7 @@ async def admin_update_hero_config(
     config_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Update a hero config by its MongoDB id."""
-    if HeroConfigService is None:
+    if HeroConfigService is None or HeroConfigCreate is None or HeroConfigUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     service = HeroConfigService()
@@ -953,7 +1121,12 @@ async def admin_update_hero_config(
         raise HTTPException(status_code=404, detail="Hero config not found")
 
     try:
-        merged = {**existing.model_dump(), **payload}
+        update_data = build_update_payload(HeroConfigUpdate, payload)
+        require_update_fields(update_data)
+        existing_data = existing.model_dump(
+            exclude={"_id", "id", "updated_at", "created_at"}
+        )
+        merged = {**existing_data, **update_data}
         data = HeroConfigCreate(**merged)
         updated = await service.update(config_id, data.model_dump())
     except Exception as e:
@@ -1080,11 +1253,13 @@ async def admin_update_site_asset(
     asset_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Update a site asset by its MongoDB id."""
-    if SiteAssetService is None:
+    if SiteAssetService is None or SiteAssetUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     try:
-        updated = await SiteAssetService().update(asset_id, payload)
+        update_data = build_update_payload(SiteAssetUpdate, payload)
+        require_update_fields(update_data)
+        updated = await SiteAssetService().update(asset_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -1151,11 +1326,13 @@ async def admin_update_faq_item(
     faq_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Update a FAQ item by its MongoDB id."""
-    if FAQItemService is None:
+    if FAQItemService is None or FAQItemUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     try:
-        updated = await FAQItemService().update(faq_id, payload)
+        update_data = build_update_payload(FAQItemUpdate, payload)
+        require_update_fields(update_data)
+        updated = await FAQItemService().update(faq_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -1222,11 +1399,13 @@ async def admin_update_collection_slide(
     slide_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Update a collection slide by its MongoDB id."""
-    if CollectionSlideService is None:
+    if CollectionSlideService is None or CollectionSlideUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     
     try:
-        updated = await CollectionSlideService().update(slide_id, payload)
+        update_data = build_update_payload(CollectionSlideUpdate, payload)
+        require_update_fields(update_data)
+        updated = await CollectionSlideService().update(slide_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -1371,10 +1550,12 @@ async def admin_get_policy_meta(email: str = Depends(require_admin)):
 async def admin_upsert_policy_section(
     slug: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
-    if PolicyContentService is None:
+    if PolicyContentService is None or PolicySectionUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     try:
-        updated = await PolicyContentService().upsert_section_by_slug(slug, payload)
+        update_data = build_update_payload(PolicySectionUpdate, payload)
+        require_update_fields(update_data)
+        updated = await PolicyContentService().upsert_section_by_slug(slug, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=json.loads(json.dumps(
@@ -1736,10 +1917,12 @@ async def admin_create_blog_post(
 async def admin_update_blog_post(
     post_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
-    if BlogService is None:
+    if BlogService is None or BlogPostUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     try:
-        updated = await BlogService().update_post(post_id, payload)
+        update_data = build_update_payload(BlogPostUpdate, payload)
+        require_update_fields(update_data)
+        updated = await BlogService().update_post(post_id, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
@@ -1836,6 +2019,11 @@ async def admin_delete_newsletter(sub_id: str, email: str = Depends(require_admi
 
 # ========== Existing CQRS Endpoint ==========
 
+_IDEMPOTENT_CQRS_OPERATIONS = frozenset(
+    {"order.create", "order.initiate", "order.verifyPayment"}
+)
+
+
 @app.post("/")
 async def handle_request(request: APIRequest):
     if CQRSRouter is None:
@@ -1843,6 +2031,35 @@ async def handle_request(request: APIRequest):
 
     if request.type not in {"query", "mutation"}:
         raise HTTPException(status_code=400, detail="Invalid type")
+
+    idem_service = IdempotencyService()
+    idem_storage_key = None
+    idem_fingerprint = None
+    if request.type == "mutation" and request.operation in _IDEMPOTENT_CQRS_OPERATIONS:
+        idem_key = request.idempotencyKey
+        if (
+            settings
+            and settings.is_production
+            and settings.idempotency_required_in_production
+            and not idem_key
+        ):
+            raise HTTPException(status_code=400, detail="idempotencyKey is required")
+        if idem_key:
+            try:
+                idem_storage_key = idem_service.normalize_key(idem_key)
+                idem_fingerprint = idem_service.fingerprint(
+                    scope=f"cqrs:{request.operation}",
+                    payload=request.params,
+                )
+                cached = await idem_service.begin(idem_storage_key, idem_fingerprint)
+                if cached:
+                    return JSONResponse(status_code=cached.status_code, content=cached.body)
+            except IdempotencyConflictError:
+                raise HTTPException(
+                    status_code=409, detail="Idempotency-Key reused with different payload"
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         if request.type == "query":
@@ -1854,13 +2071,34 @@ async def handle_request(request: APIRequest):
                 request.operation, request.params, request.adminKey
             )
 
-        return JSONResponse(
-            content=json.loads(json.dumps(result, cls=JSONEncoder))
-        )
+        response_body = json.loads(json.dumps(result, cls=JSONEncoder))
+        if idem_storage_key and idem_fingerprint:
+            await idem_service.store(
+                idem_storage_key,
+                idem_fingerprint,
+                status_code=200,
+                body=response_body,
+            )
+        return JSONResponse(content=response_body)
 
     except HTTPException:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
         raise
+    except ValidationError:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
+        raise HTTPException(status_code=400, detail="Invalid request parameters")
     except Exception as e:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
+        if AuthorizationError is not None and isinstance(e, AuthorizationError):
+            raise HTTPException(status_code=403, detail=str(e))
+        if isinstance(e, ValueError):
+            message = str(e)
+            if "authentication required" in message.lower():
+                raise HTTPException(status_code=403, detail=message)
+            raise HTTPException(status_code=400, detail=message)
         if logger:
             logger.error(str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1945,7 +2183,7 @@ async def razorpay_webhook(
             except Exception as e:
                 logger.error(f"Failed to process webhook for order {order_id}: {e}")
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to process order: {str(e)}"
+                    status_code=500,
                 )
         
         logger.info(f"Webhook event {event} received but not processed")
@@ -1959,9 +2197,56 @@ async def razorpay_webhook(
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
+@app.get("/health/live")
+async def health_live():
+    """Public liveness probe — no infrastructure details."""
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe — verifies DB and Redis connectivity without exposing stats."""
+    db_ok = False
+    redis_ok = False
+
+    if db is not None:
+        try:
+            database = await db.get_database()
+            await database.command("ping")
+            db_ok = True
+        except Exception:
+            db_ok = False
+
+    if redis_client is not None:
+        try:
+            client = await redis_client.get_client()
+            await client.ping()
+            redis_ok = True
+        except Exception:
+            redis_ok = False
+
+    status_value = "ready" if db_ok and redis_ok else "not_ready"
+    code = 200 if db_ok and redis_ok else 503
+    return JSONResponse(
+        status_code=code,
+        content={
+            "status": status_value,
+            "database": "connected" if db_ok else "unavailable",
+            "redis": "connected" if redis_ok else "unavailable",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check with system stats, database stats, and environment info"""
+    """Public health alias — returns liveness only (no reconnaissance data)."""
+    return await health_live()
+
+
+@app.get("/health/detail")
+async def health_detail(email: str = Depends(require_admin)):
+    """Admin-only detailed infrastructure statistics."""
     
     async def get_db_stats():
         """Get MongoDB database statistics"""
@@ -2037,7 +2322,9 @@ async def health_check():
                 env_info = {
                     "mongodb_db_name": settings.mongodb_db_name,
                     "log_level": settings.log_level,
-                    "has_admin_login": bool(settings.admin_email and settings.admin_password),
+                    "has_admin_login": bool(
+                        settings.admin_email and settings.admin_password_configured
+                    ),
                     "has_redis_url": bool(settings.redis_url),
                 }
             
@@ -2102,9 +2389,71 @@ async def health_check():
     }
 
 
+@app.get("/metrics")
+async def metrics(request: Request):
+    if settings is None or render_metrics is None:
+        raise HTTPException(status_code=500, detail="Metrics not initialized")
+    if not settings.metrics_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if settings.is_production:
+        token = (request.headers.get("X-Metrics-Token") or "").strip()
+        if not settings.metrics_token or token != settings.metrics_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload, content_type = render_metrics()
+    return Response(content=payload, media_type=content_type)
+
+
+@app.get("/api/admin/fraud/reviews")
+async def admin_list_fraud_reviews(
+    skip: int = 0,
+    limit: int = 50,
+    email: str = Depends(require_admin),
+):
+    if FraudReviewService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    reviews = await FraudReviewService().list_pending(skip=skip, limit=limit)
+    return JSONResponse(content={"data": reviews, "count": len(reviews)})
+
+
+@app.post("/api/admin/fraud/reviews/{review_id}/resolve")
+async def admin_resolve_fraud_review(
+    review_id: str,
+    payload: Dict[str, Any],
+    email: str = Depends(require_admin),
+):
+    if FraudReviewService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    status = (payload.get("status") or "").strip().lower()
+    note = (payload.get("note") or "").strip()
+    try:
+        ok = await FraudReviewService().resolve(review_id, status=status, note=note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    return {"success": True, "status": status}
+
+
 @app.post("/cron/telegram/notify")
-async def telegram_notify_cron():
-    """Cron endpoint to process and send Telegram notifications"""
+async def telegram_notify_cron(
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+):
+    """Cron endpoint to process and send Telegram notifications."""
+    if settings is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    expected = settings.cron_secret
+    if settings.is_production:
+        if not expected:
+            raise HTTPException(status_code=500, detail="CRON_SECRET is not configured")
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    elif expected:
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     if TelegramService is None:
         raise HTTPException(status_code=500, detail="TelegramService not initialized")
     
@@ -2121,4 +2470,69 @@ async def telegram_notify_cron():
     except Exception as e:
         if logger:
             logger.error(f"Telegram cron error: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500) from e
+
+
+@app.post("/cron/inventory/reconcile")
+async def inventory_reconcile_cron(
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+):
+    """Release inventory reservations for orders nearing Redis TTL expiry."""
+    if settings is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    expected = settings.cron_secret
+    if settings.is_production:
+        if not expected:
+            raise HTTPException(status_code=500, detail="CRON_SECRET is not configured")
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    elif expected:
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        from src.services.inventory_service import InventoryService
+
+        released = await InventoryService().reconcile_stale_reservations()
+        return JSONResponse(content={"released": released})
+    except HTTPException:
+        raise
+    except Exception as e:
+        if logger:
+            logger.error(f"Inventory reconcile cron error: {e}")
+        raise HTTPException(status_code=500) from e
+
+
+@app.post("/cron/orders/reconcile")
+async def orders_reconcile_cron(
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+):
+    """F-13: recover paid Razorpay orders whose webhook was lost or unverified.
+
+    Queries Razorpay for captured payments on pending orders and persists them,
+    so a missing/misconfigured RAZORPAY_WEBHOOK_SECRET (or a dropped webhook)
+    cannot silently lose paid orders before their Redis TTL expires.
+    """
+    if settings is None or OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    expected = settings.cron_secret
+    if settings.is_production:
+        if not expected:
+            raise HTTPException(status_code=500, detail="CRON_SECRET is not configured")
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    elif expected:
+        if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        summary = await OrderService().reconcile_pending_payments()
+        return JSONResponse(content=summary)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if logger:
+            logger.error(f"Orders reconcile cron error: {e}")
+        raise HTTPException(status_code=500) from e

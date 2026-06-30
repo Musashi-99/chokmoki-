@@ -9,7 +9,9 @@ import requests
 
 BASE = os.environ.get("QA_BASE_URL", "http://localhost:8001")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@chokmoki.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    raise SystemExit("ADMIN_PASSWORD environment variable is required for QA scripts")
 
 TOKEN = None
 FAILURES = []

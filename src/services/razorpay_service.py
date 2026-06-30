@@ -29,6 +29,64 @@ class RazorpayService:
             logger.error(f"Failed to create Razorpay order: {e}")
             raise ValueError(f"Failed to create payment order: {str(e)}")
     
+    def fetch_payment_amount_inr(self, razorpay_payment_id: str) -> float:
+        """Return captured payment amount in INR (not paise)."""
+        payment = self.client.payment.fetch(razorpay_payment_id)
+        amount_paise = int(payment.get("amount") or 0)
+        return amount_paise / 100.0
+
+    def fetch_captured_payment(self, razorpay_order_id: str) -> Optional[dict]:
+        """Return the captured/authorized payment for a Razorpay order, if any.
+
+        Used by the F-13 reconciliation job to recover paid orders whose webhook
+        was lost or never verified (e.g. RAZORPAY_WEBHOOK_SECRET was unset). We
+        ask Razorpay directly for the authoritative payment state rather than
+        trusting any client input. Returns a dict with `id`, `status`, and
+        `amount_inr`, or ``None`` if no payment has been captured/authorized.
+        """
+        try:
+            response = self.client.order.payments(razorpay_order_id)
+            for payment in response.get("items", []):
+                if payment.get("status") in ("captured", "authorized"):
+                    return {
+                        "id": payment.get("id"),
+                        "status": payment.get("status"),
+                        "amount_inr": int(payment.get("amount") or 0) / 100.0,
+                    }
+            return None
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch payments for Razorpay order {razorpay_order_id}: {e}"
+            )
+            return None
+
+    def verify_payment_amount(
+        self,
+        razorpay_payment_id: str,
+        expected_amount_inr: float,
+        tolerance_paise: int = 1,
+    ) -> bool:
+        """Verify Razorpay captured amount matches the expected order total."""
+        try:
+            payment = self.client.payment.fetch(razorpay_payment_id)
+            captured_paise = int(payment.get("amount") or 0)
+            expected_paise = int(round(expected_amount_inr * 100))
+            if abs(captured_paise - expected_paise) > tolerance_paise:
+                logger.warning(
+                    "Payment amount mismatch: expected %s paise, got %s paise",
+                    expected_paise,
+                    captured_paise,
+                )
+                return False
+            status = payment.get("status")
+            if status not in ("captured", "authorized"):
+                logger.warning("Payment %s has unexpected status: %s", razorpay_payment_id, status)
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Failed to verify payment amount: {e}")
+            return False
+
     def verify_payment_signature(self, razorpay_order_id: str, razorpay_payment_id: str, razorpay_signature: str) -> bool:
         """Verify Razorpay payment signature using HMAC"""
         try:

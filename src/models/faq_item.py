@@ -27,3 +27,14 @@ class FAQItemCreate(BaseModel):
     scope: str = "both"
     sort_order: int = 0
     active: bool = True
+
+
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class FAQItemUpdate(StrictUpdateModel):
+    question: Optional[str] = Field(default=None, max_length=500)
+    answer: Optional[str] = Field(default=None, max_length=3000)
+    scope: Optional[str] = None
+    sort_order: Optional[int] = None
+    active: Optional[bool] = None

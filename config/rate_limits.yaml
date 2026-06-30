@@ -1,0 +1,145 @@
+rules:
+  - id: admin_login_ip
+    match:
+      methods: [POST]
+      paths: [/api/admin/login]
+    buckets:
+      - scope: ip
+        rate: 5
+        window: 15m
+        burst: 2
+      - scope: email
+        field: email
+        rate: 3
+        window: 15m
+        burst: 1
+
+  - id: orders
+    match:
+      methods: [POST]
+      paths: [/api/orders, /]
+      operations: [order.create, order.initiate]
+    buckets:
+      - scope: ip
+        rate: 5
+        window: 1h
+        burst: 2
+      - scope: email
+        field: userEmail
+        rate: 3
+        window: 1h
+        burst: 2
+
+  - id: contact
+    match:
+      methods: [POST]
+      paths: [/api/contact, /]
+      operations: [contact.create]
+    buckets:
+      - scope: ip
+        rate: 3
+        window: 1h
+        burst: 1
+      - scope: email
+        field: email
+        rate: 1
+        window: 1h
+        burst: 1
+
+  - id: newsletter
+    match:
+      methods: [POST]
+      paths: [/api/newsletter, /]
+      operations: [newsletter.subscribe]
+    buckets:
+      - scope: ip
+        rate: 3
+        window: 24h
+        burst: 1
+      - scope: email
+        field: email
+        rate: 1
+        window: 24h
+        burst: 1
+
+  # F-14: cap public analytics writes per IP so trackEvent/trackMetric cannot
+  # be used to flood/poison dashboards. Validation (allowlists + bounds) lives
+  # in src/cqrs/param_models.py; this is the volume control.
+  - id: analytics_write
+    match:
+      methods: [POST]
+      paths: [/]
+      operations: [analytics.trackEvent, analytics.trackMetric]
+    buckets:
+      - scope: ip
+        rate: 120
+        window: 1m
+        burst: 30
+
+  - id: product_search
+    match:
+      methods: [GET]
+      paths: [/api/products]
+    buckets:
+      - scope: ip
+        rate: 60
+        window: 1m
+        burst: 20
+
+  - id: admin_api
+    match:
+      methods: ["*"]
+      paths: [/api/admin/*]
+    buckets:
+      - scope: ip
+        rate: 120
+        window: 1m
+        burst: 30
+      - scope: admin
+        rate: 60
+        window: 1m
+        burst: 30
+
+  - id: admin_upload
+    match:
+      methods: [POST]
+      paths: [/api/admin/upload]
+    buckets:
+      - scope: ip
+        rate: 30
+        window: 1m
+        burst: 10
+      - scope: admin
+        rate: 20
+        window: 1m
+        burst: 5
+
+  - id: webhook_razorpay
+    match:
+      methods: [POST]
+      paths: [/webhook/razorpay]
+    buckets:
+      - scope: ip
+        rate: 1000
+        window: 1m
+        burst: 100
+
+  - id: public_get
+    match:
+      methods: [GET]
+      paths: ["*"]
+    buckets:
+      - scope: ip
+        rate: 400
+        window: 3m
+        burst: 400
+
+  - id: public_post_fallback
+    match:
+      methods: [POST]
+      paths: ["*"]
+    buckets:
+      - scope: ip
+        rate: 400
+        window: 3m
+        burst: 400

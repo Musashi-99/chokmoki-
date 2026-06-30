@@ -27,3 +27,14 @@ class SiteAssetCreate(BaseModel):
     url: str
     alt_text: str = ""
     active: bool = True
+
+
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class SiteAssetUpdate(StrictUpdateModel):
+    key: Optional[str] = Field(default=None, min_length=1)
+    asset_type: Optional[str] = None
+    url: Optional[str] = None
+    alt_text: Optional[str] = None
+    active: Optional[bool] = None

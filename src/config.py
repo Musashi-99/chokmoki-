@@ -1,9 +1,22 @@
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
+from typing import List, Optional
+
+
+from src.security.cors_policy import parse_cors_origins
+from src.security.secrets_validation import collect_production_secret_errors
+
+
+INSECURE_DEFAULTS = {
+    "admin_password": "admin123",
+    "jwt_secret": "chokmoki-jwt-secret-change-me",
+}
 
 
 class Settings(BaseSettings):
+    # Environment
+    environment: str = Field(default="development", env="ENVIRONMENT")
+
     # Mongo
     mongodb_uri: str = Field(..., env="MONGODB_URI")
     mongodb_db_name: str = Field(default="lowkey_ecom", env="MONGODB_DB_NAME")
@@ -11,12 +24,33 @@ class Settings(BaseSettings):
     # Auth
     admin_email: str = Field(default="admin@chokmoki.com", env="ADMIN_EMAIL")
     admin_password: str = Field(default="admin123", env="ADMIN_PASSWORD")
+    admin_password_hash: Optional[str] = Field(default=None, env="ADMIN_PASSWORD_HASH")
     jwt_secret: str = Field(default="chokmoki-jwt-secret-change-me", env="JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
     jwt_expiration_hours: int = Field(default=24, env="JWT_EXPIRATION_HOURS")
+    jwt_access_ttl_minutes: int = Field(default=60, env="JWT_ACCESS_TTL_MINUTES")
+    jwt_refresh_ttl_days: int = Field(default=7, env="JWT_REFRESH_TTL_DAYS")
+    jwt_secret_previous: Optional[str] = Field(default=None, env="JWT_SECRET_PREVIOUS")
+    admin_mfa_secret: Optional[str] = Field(default=None, env="ADMIN_MFA_SECRET")
+    csrf_enabled: bool = Field(default=True, env="CSRF_ENABLED")
+    admin_cookie_samesite: str = Field(default="lax", env="ADMIN_COOKIE_SAMESITE")
+    admin_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_COOKIE_DOMAIN")
+    admin_cookie_secure: Optional[bool] = Field(default=None, env="ADMIN_COOKIE_SECURE")
+    admin_legacy_bearer_enabled: bool = Field(
+        default=False, env="ADMIN_LEGACY_BEARER_ENABLED"
+    )
 
     # Infra
     redis_url: str = Field(..., env="REDIS_URL")
+
+    # CORS — comma-separated origins, e.g. https://shop.example.com,http://localhost:5173
+    cors_allowed_origins: str = Field(
+        default="http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
+        env="CORS_ALLOWED_ORIGINS",
+    )
+
+    # Cron / internal
+    cron_secret: Optional[str] = Field(default=None, env="CRON_SECRET")
 
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
@@ -32,7 +66,9 @@ class Settings(BaseSettings):
     telegram_chat_id: Optional[str] = Field(default=None, env="TELEGRAM_CHAT_ID")
     telegram_message_max_chars: int = Field(default=3800, env="TELEGRAM_MESSAGE_MAX_CHARS")
     telegram_redis_key: str = Field(default="telegram:orders:pending", env="TELEGRAM_REDIS_KEY")
-    telegram_product_base_url: str = Field(default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL")
+    telegram_product_base_url: str = Field(
+        default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL"
+    )
 
     # R2 / S3
     r2_account_id: str = Field(default="", env="R2_ACCOUNT_ID")
@@ -47,16 +83,179 @@ class Settings(BaseSettings):
     rate_limit_normal_get: int = Field(default=400, env="RATE_LIMIT_NORMAL_GET")
     rate_limit_normal_post: int = Field(default=400, env="RATE_LIMIT_NORMAL_POST")
     rate_limit_normal_time: str = Field(default="3m", env="RATE_LIMIT_NORMAL_TIME")
-    rate_limit_order_max: int = Field(default=50, env="RATE_LIMIT_ORDER_MAX")
-    rate_limit_order_time: str = Field(default="24h", env="RATE_LIMIT_ORDER_TIME")
+    rate_limit_order_max: int = Field(default=5, env="RATE_LIMIT_ORDER_MAX")
+    rate_limit_order_time: str = Field(default="1h", env="RATE_LIMIT_ORDER_TIME")
+    rate_limit_contact_max: int = Field(default=3, env="RATE_LIMIT_CONTACT_MAX")
+    rate_limit_contact_time: str = Field(default="1h", env="RATE_LIMIT_CONTACT_TIME")
+    rate_limit_newsletter_max: int = Field(default=3, env="RATE_LIMIT_NEWSLETTER_MAX")
+    rate_limit_newsletter_time: str = Field(default="24h", env="RATE_LIMIT_NEWSLETTER_TIME")
+    rate_limit_fail_closed: bool = Field(default=False, env="RATE_LIMIT_FAIL_CLOSED")
+    rate_limit_auth_fail_closed: bool = Field(
+        default=True, env="RATE_LIMIT_AUTH_FAIL_CLOSED"
+    )
+    rate_limit_config_file: Optional[str] = Field(default=None, env="RATE_LIMIT_CONFIG_FILE")
+    trusted_proxy_enabled: bool = Field(default=False, env="TRUSTED_PROXY_ENABLED")
+    trust_x_forwarded_for: bool = Field(default=False, env="TRUST_X_FORWARDED_FOR")
+    rate_limit_ip_header: Optional[str] = Field(default=None, env="RATE_LIMIT_IP_HEADER")
 
+    # Login lockout
+    login_max_failed_attempts: int = Field(default=5, env="LOGIN_MAX_FAILED_ATTEMPTS")
+    login_lockout_seconds: int = Field(default=1800, env="LOGIN_LOCKOUT_SECONDS")
+    login_failure_window_seconds: int = Field(
+        default=900, env="LOGIN_FAILURE_WINDOW_SECONDS"
+    )
+
+    # Orders
+    order_min_quantity: int = Field(default=1, env="ORDER_MIN_QUANTITY")
+    order_max_quantity: int = Field(default=99, env="ORDER_MAX_QUANTITY")
+
+    # Inventory
+    inventory_enabled: bool = Field(default=True, env="INVENTORY_ENABLED")
+    inventory_reservation_ttl_seconds: int = Field(
+        default=3600, env="INVENTORY_RESERVATION_TTL_SECONDS"
+    )
+
+    # Fraud Detection
+    fraud_enabled: bool = Field(default=False, env="FRAUD_ENABLED")
+    fraud_fail_closed: bool = Field(default=False, env="FRAUD_FAIL_CLOSED")
+    fraud_rules_file: str = Field(
+        default="config/fraud_rules.yaml", env="FRAUD_RULES_FILE"
+    )
+    fraud_audit_enabled: bool = Field(default=True, env="FRAUD_AUDIT_ENABLED")
+    fraud_velocity_window_seconds: int = Field(
+        default=3600, env="FRAUD_VELOCITY_WINDOW_SECONDS"
+    )
+    fraud_duplicate_window_seconds: int = Field(
+        default=900, env="FRAUD_DUPLICATE_WINDOW_SECONDS"
+    )
+    fraud_velocity_email_threshold: int = Field(
+        default=5, env="FRAUD_VELOCITY_EMAIL_THRESHOLD"
+    )
+    fraud_velocity_ip_threshold: int = Field(default=10, env="FRAUD_VELOCITY_IP_THRESHOLD")
+
+    # Idempotency
+    idempotency_enabled: bool = Field(default=True, env="IDEMPOTENCY_ENABLED")
+    idempotency_ttl_seconds: int = Field(default=86400, env="IDEMPOTENCY_TTL_SECONDS")
+    idempotency_required_in_production: bool = Field(
+        default=True, env="IDEMPOTENCY_REQUIRED_IN_PRODUCTION"
+    )
+
+    # Metrics
+    metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
+    metrics_token: Optional[str] = Field(default=None, env="METRICS_TOKEN")
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
-        env_ignore_empty=True
+        env_ignore_empty=True,
     )
 
-settings = Settings()
+    @field_validator("environment")
+    @classmethod
+    def normalize_environment(cls, value: str) -> str:
+        return (value or "development").strip().lower()
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    @property
+    def admin_password_configured(self) -> bool:
+        return bool(
+            (self.admin_password_hash and self.admin_password_hash.strip())
+            or (self.admin_password and self.admin_password.strip())
+        )
+
+    @property
+    def admin_mfa_enabled(self) -> bool:
+        return bool(self.admin_mfa_secret and self.admin_mfa_secret.strip())
+
+    @property
+    def cookie_secure(self) -> bool:
+        if self.admin_cookie_secure is not None:
+            return self.admin_cookie_secure
+        return self.is_production
+
+    @property
+    def cookie_samesite(self) -> str:
+        value = (self.admin_cookie_samesite or "lax").strip().lower()
+        if value not in {"lax", "strict", "none"}:
+            return "lax"
+        return value
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        allow_wildcard = not self.is_production
+        return parse_cors_origins(
+            self.cors_allowed_origins or "",
+            allow_wildcard=allow_wildcard,
+        )
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        try:
+            origins = parse_cors_origins(
+                self.cors_allowed_origins or "",
+                allow_wildcard=not self.is_production,
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if not self.is_production:
+            return self
+
+        errors: List[str] = collect_production_secret_errors(
+            admin_password=self.admin_password,
+            admin_password_hash=self.admin_password_hash,
+            jwt_secret=self.jwt_secret,
+            jwt_secret_previous=self.jwt_secret_previous,
+            cron_secret=self.cron_secret,
+            metrics_enabled=self.metrics_enabled,
+            metrics_token=self.metrics_token,
+            r2_access_key_id=self.r2_access_key_id,
+            r2_secret_access_key=self.r2_secret_access_key,
+            razorpay_webhook_secret=self.razorpay_webhook_secret,
+        )
+
+        if not origins:
+            errors.append(
+                "CORS_ALLOWED_ORIGINS must list explicit storefront origins in production"
+            )
+
+        if self.order_min_quantity < 1:
+            errors.append("ORDER_MIN_QUANTITY must be >= 1")
+
+        if self.order_max_quantity < self.order_min_quantity:
+            errors.append("ORDER_MAX_QUANTITY must be >= ORDER_MIN_QUANTITY")
+
+        if not self.rate_limit_auth_fail_closed:
+            errors.append("RATE_LIMIT_AUTH_FAIL_CLOSED must be true in production")
+
+        if self.trust_x_forwarded_for:
+            errors.append("TRUST_X_FORWARDED_FOR must be false in production")
+
+        if self.admin_legacy_bearer_enabled:
+            errors.append("ADMIN_LEGACY_BEARER_ENABLED must be false in production")
+
+        if not self.fraud_enabled:
+            errors.append("FRAUD_ENABLED must be true in production")
+
+        if not self.idempotency_enabled:
+            errors.append("IDEMPOTENCY_ENABLED must be true in production")
+
+        if errors:
+            raise ValueError(
+                "Insecure production configuration:\n- " + "\n- ".join(errors)
+            )
+
+        return self
+
+
+def load_settings() -> Settings:
+    """Load settings and fail fast on insecure production configuration."""
+    return Settings()
+
+
+settings = load_settings()

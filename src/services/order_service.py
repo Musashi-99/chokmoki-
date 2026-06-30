@@ -10,9 +10,14 @@ from src.models.common import PricingDTO
 from src.models.dto import OrderInitiateResponseDTO, OrderLogDTO
 from src.models.product import Product
 from src.services.product_service import ProductService
+from src.services.inventory_service import InventoryService
 from src.services.razorpay_service import RazorpayService
 from src.config import settings
 from src.plugins.logger import logger
+from src.fraud.models import FraudAction, FraudContext
+from src.services.fraud_detection_service import FraudDetectionService
+from src.utils.regex_safe import escape_mongo_regex
+from src.security.mongo_safe import coerce_safe_string
 
 # Optional Telegram import
 try:
@@ -42,6 +47,8 @@ class OrderService:
         return Order(**order_doc)
 
     async def _clear_pending_redis(self, order_id: str) -> None:
+        inventory_service = InventoryService()
+        await inventory_service.release_reservation(order_id)
         redis = await redis_client.get_client()
         await redis.delete(f"pending_order:{order_id}")
 
@@ -74,6 +81,14 @@ class OrderService:
             return None, "not_found"
 
         order_dict = json.loads(order_json)
+        expected_total = float(order_dict.get("total_amount") or 0)
+        if razorpay_payment_id:
+            razorpay_service = RazorpayService()
+            if not razorpay_service.verify_payment_amount(
+                razorpay_payment_id, expected_total
+            ):
+                raise ValueError("Payment amount does not match order total")
+
         order_dict["payment_status"] = "completed"
         order_dict["razorpay_order_id"] = razorpay_order_id
         order_dict["razorpay_payment_id"] = razorpay_payment_id
@@ -92,6 +107,8 @@ class OrderService:
             return None, "not_found"
 
         if created:
+            inventory_service = InventoryService()
+            await inventory_service.commit_reservation(order_id)
             log_dict = {
                 "order_id": order_id,
                 "raw_data": order_dict.get("raw_order_log", {}),
@@ -117,6 +134,81 @@ class OrderService:
             logger.info(f"Order {order_id} already in MongoDB (concurrent completion)")
         return self._order_from_doc(saved), status
     
+    async def reconcile_pending_payments(self, limit: int = 200) -> dict:
+        """F-13: recover paid Razorpay orders stuck in Redis.
+
+        If a webhook is lost or ``RAZORPAY_WEBHOOK_SECRET`` was unset, a captured
+        payment never triggers ``complete_pending_order`` and the order expires
+        from Redis after its TTL — the customer is charged but the order is lost.
+
+        This job scans pending Razorpay orders, asks Razorpay for the
+        authoritative payment state, and persists any order whose payment was
+        actually captured/authorized. It is idempotent: ``complete_pending_order``
+        upserts on the unique ``order_id`` index, so re-running (or racing the
+        webhook) cannot create duplicates.
+
+        Returns a summary dict: ``{checked, recovered, still_pending, errors}``.
+        """
+        redis = await redis_client.get_client()
+        razorpay_service = RazorpayService()
+
+        keys: list[str] = []
+        async for key in redis.scan_iter(match="pending_order:*", count=100):
+            keys.append(key)
+            if len(keys) >= limit:
+                break
+
+        checked = 0
+        recovered = 0
+        still_pending = 0
+        errors = 0
+
+        for key in keys:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+
+            if data.get("payment_method") != "razorpay":
+                continue
+            order_id = data.get("order_id")
+            razorpay_order_id = data.get("razorpay_order_id")
+            if not order_id or not razorpay_order_id:
+                # Older record written before F-13 stored the razorpay_order_id,
+                # or order id missing — cannot reconcile without it.
+                still_pending += 1
+                continue
+
+            checked += 1
+            payment = razorpay_service.fetch_captured_payment(razorpay_order_id)
+            if not payment:
+                still_pending += 1
+                continue
+
+            try:
+                _order, status = await self.complete_pending_order(
+                    order_id, razorpay_order_id, payment["id"]
+                )
+                if status == "created":
+                    recovered += 1
+                    logger.info(
+                        f"Reconciled paid order {order_id} "
+                        f"(payment {payment['id']}) recovered from Razorpay"
+                    )
+            except Exception as e:
+                errors += 1
+                logger.error(f"Failed to reconcile order {order_id}: {e}")
+
+        return {
+            "checked": checked,
+            "recovered": recovered,
+            "still_pending": still_pending,
+            "errors": errors,
+        }
+
     def _validate_variant(self, product: Product, variant: dict) -> bool:
         """Validate that the variant matches the product's variant structure"""
         if not product.product_variants:
@@ -209,6 +301,20 @@ class OrderService:
             raise ValueError("Use initiate_order for razorpay payments")
         
         validated_items, pricing = await self._validate_and_prepare_order(order_data)
+
+        fraud_ctx = FraudContext(
+            event_type="order_create",
+            amount=float(pricing.total),
+            email=order_data.userEmail,
+            phone=order_data.shippingAddress.phone,
+            endpoint="/api/orders",
+        )
+        decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
+        if decision.action == FraudAction.REJECT:
+            raise ValueError("Order rejected")
+
+        inventory_service = InventoryService()
+        await inventory_service.commit_items(validated_items)
         
         database = await db.get_database()
         orders_collection = database[self.COLLECTION_NAME]
@@ -218,6 +324,7 @@ class OrderService:
         order_id = str(uuid.uuid4())
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
+        raw_order_log["fraud_decision"] = decision.model_dump()
         
         # Convert to dict for MongoDB
         order_dict = {
@@ -285,8 +392,11 @@ class OrderService:
             if not product_id:
                 raise ValueError("Each line item needs a product_id")
             quantity = int(raw.get("quantity") or 0)
-            if quantity < 1:
-                raise ValueError("Quantity must be at least 1")
+            if quantity < settings.order_min_quantity or quantity > settings.order_max_quantity:
+                raise ValueError(
+                    f"Quantity must be between {settings.order_min_quantity} "
+                    f"and {settings.order_max_quantity}"
+                )
 
             product = await product_service.get_by_id(str(product_id))
             if not product:
@@ -343,6 +453,16 @@ class OrderService:
             "source": "admin_dashboard",
             "received_at": datetime.utcnow().isoformat(),
         }
+        if settings.fraud_enabled:
+            fraud_ctx = FraudContext(
+                event_type="admin_order_create",
+                amount=float(total_amount),
+                email=user_email,
+                phone=shipping_address.get("phone"),
+                endpoint="/api/admin/orders",
+            )
+            decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=payload)
+            raw_order_log["fraud_decision"] = decision.model_dump()
 
         shipping_address["email"] = shipping_address.get("email") or user_email
 
@@ -362,6 +482,10 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log,
         }
+
+        if payment_status == "completed":
+            inventory_service = InventoryService()
+            await inventory_service.commit_items(validated_items)
 
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
@@ -475,16 +599,28 @@ class OrderService:
         to_date: Optional[str] = None,
     ) -> dict:
         query: dict = {}
+        if user_email is not None:
+            user_email = coerce_safe_string(user_email, "user_email")
+        if status is not None:
+            status = coerce_safe_string(status, "status")
+        if search is not None:
+            search = coerce_safe_string(search, "search")
+        if from_date is not None:
+            from_date = coerce_safe_string(from_date, "from_date")
+        if to_date is not None:
+            to_date = coerce_safe_string(to_date, "to_date")
+
         if user_email:
             query["user_email"] = user_email
         if status:
             query["status.type"] = status
         if search:
+            safe = escape_mongo_regex(search)
             query["$or"] = [
-                {"order_id": {"$regex": search, "$options": "i"}},
-                {"user_email": {"$regex": search, "$options": "i"}},
-                {"shipping_address.full_name": {"$regex": search, "$options": "i"}},
-                {"shipping_address.phone": {"$regex": search, "$options": "i"}},
+                {"order_id": {"$regex": safe, "$options": "i"}},
+                {"user_email": {"$regex": safe, "$options": "i"}},
+                {"shipping_address.full_name": {"$regex": safe, "$options": "i"}},
+                {"shipping_address.phone": {"$regex": safe, "$options": "i"}},
             ]
         if from_date or to_date:
             date_filter: dict = {}
@@ -532,7 +668,15 @@ class OrderService:
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
         
+        min_qty = settings.order_min_quantity
+        max_qty = settings.order_max_quantity
+
         for item in order_data.items:
+            if item.quantity < min_qty or item.quantity > max_qty:
+                raise ValueError(
+                    f"Quantity must be between {min_qty} and {max_qty} for product {item.productId}"
+                )
+
             product = await product_service.get_by_id(item.productId)
             if not product:
                 raise ValueError(f"Product {item.productId} not found")
@@ -566,11 +710,26 @@ class OrderService:
             raise ValueError("initiate_order only supports razorpay payment method")
         
         validated_items, pricing = await self._validate_and_prepare_order(order_data)
+
+        fraud_ctx = FraudContext(
+            event_type="order_initiate",
+            amount=float(pricing.total),
+            email=order_data.userEmail,
+            phone=order_data.shippingAddress.phone,
+            endpoint="/api/orders/initiate",
+        )
+        decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
+        if decision.action == FraudAction.REJECT:
+            raise ValueError("Order rejected")
         
         order_id = str(uuid.uuid4())
+        inventory_service = InventoryService()
+        await inventory_service.reserve_for_order(order_id, validated_items)
+
         raw_order_log = order_data.model_dump()
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
+        raw_order_log["fraud_decision"] = decision.model_dump()
         
         # Convert to dict for Redis storage
         order_dict = {
@@ -592,14 +751,24 @@ class OrderService:
         
         redis = await redis_client.get_client()
         redis_key = f"pending_order:{order_id}"
-        await redis.setex(redis_key, 3600, json.dumps(order_dict, default=str))
+        await redis.setex(
+            redis_key,
+            settings.inventory_reservation_ttl_seconds,
+            json.dumps(order_dict, default=str),
+        )
         
         razorpay_service = RazorpayService()
         razorpay_order = razorpay_service.create_order(
             amount=pricing.total,
             notes={"order_id": order_id, "user_email": order_data.userEmail}
         )
-        
+
+        # F-13: persist the Razorpay order id into the pending record so the
+        # reconciliation job can query Razorpay for captured payments whose
+        # webhook never arrived. `keepttl` preserves the reservation TTL.
+        order_dict["razorpay_order_id"] = razorpay_order.id
+        await redis.set(redis_key, json.dumps(order_dict, default=str), keepttl=True)
+
         logger.info(f"Order initiated: {order_id}, Razorpay order: {razorpay_order.id}")
         
         return OrderInitiateResponseDTO(

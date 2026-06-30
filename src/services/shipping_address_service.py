@@ -2,6 +2,7 @@ from typing import List, Optional
 from src.database.connection import db
 from src.models.shipping_address import ShippingAddress, ShippingAddressCreate, ShippingAddressUpdate
 from src.plugins.logger import logger
+from src.security.mongo_safe import coerce_safe_string
 from bson import ObjectId
 from datetime import datetime
 
@@ -49,8 +50,12 @@ class ShippingAddressService:
     async def get_by_email(self, email: str) -> List[ShippingAddress]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        
-        cursor = collection.find({"email": email}).sort("created_at", -1)
+
+        safe_email = coerce_safe_string(email, "email")
+        if not safe_email:
+            raise ValueError("email is required")
+
+        cursor = collection.find({"email": safe_email}).sort("created_at", -1)
         addresses = []
         async for doc in cursor:
             addresses.append(ShippingAddress(**doc))

@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, model_validator
 from bson import ObjectId
 from datetime import datetime
 from src.models.product import PyObjectId
+from src.security.mass_assignment import StrictUpdateModel
 
 HERO_SLIDE_COUNT = 3
 DEFAULT_SLIDE_INTERVAL_SECONDS = 6
@@ -136,3 +137,17 @@ class HeroConfigCreate(BaseModel):
         self.media_type = desktop_type
         self.slide_interval_seconds = _clamp_interval(self.slide_interval_seconds)
         return self
+
+
+class HeroConfigUpdate(StrictUpdateModel):
+    media_type: Optional[str] = None
+    media_url: Optional[str] = None
+    media_type_desktop: Optional[str] = None
+    media_url_desktop: Optional[str] = None
+    media_type_mobile: Optional[str] = None
+    media_url_mobile: Optional[str] = None
+    media_urls_desktop: Optional[List[str]] = None
+    media_urls_mobile: Optional[List[str]] = None
+    slide_interval_seconds: Optional[int] = None
+    alt_text: Optional[str] = None
+    active: Optional[bool] = None

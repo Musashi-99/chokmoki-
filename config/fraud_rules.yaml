@@ -1,0 +1,130 @@
+id: chokmoki-fraud
+version: "2026-06-30.2"
+
+groups:
+  - id: email
+    enabled: true
+    defaults:
+      group: email
+      severity: medium
+      confidence: 70
+      priority: 50
+      action: manual_review
+      risk: 55
+
+  - id: network
+    enabled: true
+    defaults:
+      group: network
+      severity: high
+      confidence: 80
+      priority: 80
+      action: challenge
+      risk: 75
+
+  - id: velocity
+    enabled: true
+    defaults:
+      group: velocity
+      severity: high
+      confidence: 85
+      priority: 90
+      action: manual_review
+      risk: 80
+
+  - id: duplicate
+    enabled: true
+    defaults:
+      group: duplicate
+      severity: medium
+      confidence: 90
+      priority: 85
+      action: reject
+      risk: 85
+
+rules:
+  - id: email_disposable_domain
+    name: Disposable email domain
+    enabled: true
+    group: email
+    when:
+      - field: user.email
+        op: regex
+        value: "@(mailinator|tempmail|10minutemail|guerrillamail|yopmail|throwaway)\\."
+    tags: ["disposable_email"]
+
+  - id: email_disposable_attribute
+    name: Disposable email enrichment flag
+    enabled: true
+    group: email
+    when:
+      - field: attributes.disposable_email
+        op: equals
+        value: true
+    tags: ["disposable_email"]
+
+  - id: network_tor_exit
+    name: Tor exit node
+    enabled: true
+    group: network
+    action: manual_review
+    risk: 80
+    when:
+      - field: attributes.tor_exit
+        op: equals
+        value: true
+    tags: ["tor"]
+
+  - id: network_private_cidr
+    name: Private network source (should not happen)
+    enabled: true
+    group: network
+    action: reject
+    risk: 95
+    when:
+      - field: request.ip
+        op: cidr
+        value: "10.0.0.0/8"
+    tags: ["ip_spoofing"]
+
+  - id: velocity_email_burst
+    name: Email order velocity exceeded
+    enabled: true
+    group: velocity
+    when:
+      - field: velocity.email_orders_1h
+        op: gte
+        value: 5
+    tags: ["velocity"]
+
+  - id: velocity_ip_burst
+    name: IP order velocity exceeded
+    enabled: true
+    group: velocity
+    when:
+      - field: velocity.ip_orders_1h
+        op: gte
+        value: 10
+    tags: ["velocity"]
+
+  - id: duplicate_order_detected
+    name: Duplicate order fingerprint
+    enabled: true
+    group: duplicate
+    when:
+      - field: attributes.duplicate_order
+        op: equals
+        value: true
+    tags: ["duplicate_order"]
+
+  - id: high_value_order
+    name: High value order manual review
+    enabled: true
+    group: velocity
+    action: manual_review
+    risk: 70
+    when:
+      - field: event.amount
+        op: gte
+        value: 50000
+    tags: ["high_value"]

@@ -35,3 +35,18 @@ class CollectionSlideCreate(BaseModel):
     cta_to: str = "/products"
     sort_order: int = 0
     active: bool = True
+
+
+from src.security.mass_assignment import StrictUpdateModel
+
+
+class CollectionSlideUpdate(StrictUpdateModel):
+    label: Optional[str] = None
+    heading: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    image_alt: Optional[str] = None
+    cta_label: Optional[str] = None
+    cta_to: Optional[str] = None
+    sort_order: Optional[int] = None
+    active: Optional[bool] = None
