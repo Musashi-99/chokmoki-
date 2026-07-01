@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     trusted_proxy_enabled: bool = Field(default=False, env="TRUSTED_PROXY_ENABLED")
     trust_x_forwarded_for: bool = Field(default=False, env="TRUST_X_FORWARDED_FOR")
     rate_limit_ip_header: Optional[str] = Field(default=None, env="RATE_LIMIT_IP_HEADER")
+    log_client_ip_headers: bool = Field(default=False, env="LOG_CLIENT_IP_HEADERS")
 
     # Login lockout
     login_max_failed_attempts: int = Field(default=5, env="LOGIN_MAX_FAILED_ATTEMPTS")

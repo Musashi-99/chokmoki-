@@ -60,6 +60,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             operation, body_fields = await self._extract_cqrs_context(request, path, method)
             admin_email = _extract_admin_email(request)
             ip = get_client_ip(request)
+            self._log_client_ip(request, path, ip)
 
             if path == "/api/products" and method == "GET":
                 if not request.query_params.get("search"):
@@ -93,6 +94,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                 )
             return await call_next(request)
+
+    def _log_client_ip(self, request: Request, path: str, resolved_ip: str) -> None:
+        """Temporary debug: dump headers + resolved client IP for auth paths.
+
+        Toggle with LOG_CLIENT_IP_HEADERS. Only logs auth-sensitive paths to
+        avoid flooding stdout. Remove once real client IP is confirmed.
+        """
+        if not settings.log_client_ip_headers:
+            return
+        if not (path.startswith("/api/admin") or path == "/api/orders"):
+            return
+        try:
+            peer = request.client.host if request.client else None
+            headers = {k: v for k, v in request.headers.items()}
+            print(
+                f"[client-ip] path={path} resolved_ip={resolved_ip} "
+                f"peer={peer} x-forwarded-for={headers.get('x-forwarded-for')!r} "
+                f"x-real-ip={headers.get('x-real-ip')!r}",
+                flush=True,
+            )
+            print(f"[client-ip] all-headers={headers}", flush=True)
+        except Exception:
+            pass
 
     def _build_checks(
         self,
