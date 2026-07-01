@@ -1,0 +1,11 @@
+# Production override. Run WITH the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Loads the real production secrets from .env.server (bcrypt admin hash, prod
+# JWT secret, live CORS origins) and forces ENVIRONMENT=production so the
+# security hardening in src/config.py is actually enforced.
+services:
+  backend:
+    env_file:
+      - .env.server
+    environment:
+      - ENVIRONMENT=production
