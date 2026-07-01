@@ -12,6 +12,9 @@ ALLOWED_CORS_HEADERS = [
     "Content-Type",
     "X-Request-Id",
     "X-Cron-Secret",
+    # Admin SPA sends the CSRF token on cookie-authenticated requests; it must
+    # survive cross-origin preflight or the whole admin panel breaks in prod.
+    "X-CSRF-Token",
 ]
 EXPOSED_CORS_HEADERS = ["X-Request-Id"]
 CORS_MAX_AGE_SECONDS = 600
