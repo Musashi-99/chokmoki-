@@ -3,16 +3,20 @@ rules:
     match:
       methods: [POST]
       paths: [/api/admin/login]
+    # NOTE: capacity == burst (see RateLimitBucket.capacity). burst is the number
+    # of immediate attempts allowed; rate/window is the refill speed. Account
+    # lockout (LOGIN_MAX_FAILED_ATTEMPTS) is the real brute-force defense, so
+    # these only need to stop flooding, not legitimate interactive logins.
     buckets:
       - scope: ip
-        rate: 5
+        rate: 30
         window: 15m
-        burst: 2
+        burst: 10
       - scope: email
         field: email
-        rate: 3
+        rate: 15
         window: 15m
-        burst: 1
+        burst: 5
 
   - id: orders
     match:
