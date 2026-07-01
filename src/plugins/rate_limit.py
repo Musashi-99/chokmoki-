@@ -50,6 +50,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._rules = load_rate_limit_rules()
 
     async def dispatch(self, request: Request, call_next: Callable):
+        # Header/IP debug logging runs even when rate limiting is disabled.
+        self._log_client_ip(request, request.url.path, get_client_ip(request))
+
         if not settings.rate_limit_enabled:
             return await call_next(request)
 
@@ -60,7 +63,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             operation, body_fields = await self._extract_cqrs_context(request, path, method)
             admin_email = _extract_admin_email(request)
             ip = get_client_ip(request)
-            self._log_client_ip(request, path, ip)
 
             if path == "/api/products" and method == "GET":
                 if not request.query_params.get("search"):
