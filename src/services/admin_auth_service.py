@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -110,7 +111,8 @@ class AdminAuthService:
             return None
 
         email_ok = secrets.compare_digest(email.strip().lower(), expected_email.lower())
-        password_ok = verify_admin_password(
+        password_ok = await asyncio.to_thread(
+            verify_admin_password,
             password,
             password_hash=settings.admin_password_hash,
             fallback_plaintext=settings.admin_password,
