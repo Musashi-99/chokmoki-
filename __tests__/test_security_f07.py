@@ -102,6 +102,11 @@ class TestCorsMiddlewareKwargs:
         kwargs = build_cors_middleware_kwargs(["*"])
         assert kwargs["allow_credentials"] is False
 
+    def test_csrf_header_is_allowed(self):
+        # The admin SPA attaches X-CSRF-Token to every authenticated request
+        # once the CSRF cookie exists. It must survive cross-origin preflight.
+        assert "X-CSRF-Token" in ALLOWED_CORS_HEADERS
+
 
 class TestSettingsCorsGuard:
     def test_production_rejects_wildcard_cors(self, monkeypatch):
@@ -184,6 +189,22 @@ class TestCorsIntegration:
         )
         assert response.status_code == 400
         assert response.headers.get("access-control-allow-origin") is None
+
+    def test_preflight_allows_admin_csrf_header(self, cors_client):
+        # Reproduces the production admin-login breakage: the SPA sends
+        # X-CSRF-Token on authenticated requests to the cross-origin API,
+        # so the preflight must not be rejected.
+        response = cors_client.options(
+            "/api/admin/me",
+            headers={
+                "Origin": "https://shop.example.com",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "X-CSRF-Token, Content-Type",
+            },
+        )
+        assert response.status_code == 200
+        allowed = response.headers.get("access-control-allow-headers", "").lower()
+        assert "x-csrf-token" in allowed
 
     def test_preflight_includes_restricted_methods(self, cors_client):
         response = cors_client.options(
