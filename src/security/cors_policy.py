@@ -15,6 +15,8 @@ ALLOWED_CORS_HEADERS = [
     # Admin SPA sends the CSRF token on cookie-authenticated requests; it must
     # survive cross-origin preflight or the whole admin panel breaks in prod.
     "X-CSRF-Token",
+    # Storefront sends this on order creation (IDEMPOTENCY_REQUIRED_IN_PRODUCTION).
+    "Idempotency-Key",
 ]
 EXPOSED_CORS_HEADERS = ["X-Request-Id"]
 CORS_MAX_AGE_SECONDS = 600
