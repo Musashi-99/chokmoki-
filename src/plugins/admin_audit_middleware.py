@@ -1,7 +1,9 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from src.alerts.events import EVENT_ADMIN_MUTATION, publish_alert
 from src.plugins.audit import log_admin_audit
+from src.plugins.logger import logger
 from src.security.client_ip import get_client_ip
 
 
@@ -31,9 +33,10 @@ class AdminAuditMiddleware(BaseHTTPMiddleware):
             return response
 
         resource = path.removeprefix("/api/admin/").split("/")[0] or "admin"
+        action = f"{request.method.lower()}_{resource}"
         await log_admin_audit(
             actor_email=email,
-            action=f"{request.method.lower()}_{resource}",
+            action=action,
             resource=resource,
             method=request.method,
             path=path,
@@ -41,4 +44,22 @@ class AdminAuditMiddleware(BaseHTTPMiddleware):
             ip=get_client_ip(request),
             session_id=getattr(principal, "session_id", None),
         )
+
+        if response.status_code < 400:
+            try:
+                await publish_alert(
+                    EVENT_ADMIN_MUTATION,
+                    {
+                        "actor_email": email,
+                        "resource": resource,
+                        "action": action,
+                        "method": request.method,
+                        "path": path,
+                        "status_code": response.status_code,
+                    },
+                )
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to publish admin mutation alert: {e}")
+
         return response

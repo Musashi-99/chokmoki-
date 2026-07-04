@@ -19,11 +19,27 @@ from src.services.fraud_detection_service import FraudDetectionService
 from src.utils.regex_safe import escape_mongo_regex
 from src.security.mongo_safe import coerce_safe_string
 
-# Optional Telegram import
+# Optional alerts import
 try:
-    from src.services.telegram_service import TelegramService
+    from src.alerts.events import EVENT_ORDER_CREATED, publish_alert
 except ImportError:
-    TelegramService = None
+    EVENT_ORDER_CREATED = "order.created"
+    publish_alert = None
+
+
+def _order_alert_payload(order_dict: dict) -> dict:
+    shipping_address = order_dict.get("shipping_address") or {}
+    return {
+        "order_id": order_dict.get("order_id"),
+        "customer_name": shipping_address.get("full_name", ""),
+        "user_email": order_dict.get("user_email", ""),
+        "total_amount": order_dict.get("total_amount", 0),
+        "payment_method": order_dict.get("payment_method", ""),
+        "items": [
+            {"product_name": item.get("product_name", ""), "quantity": item.get("quantity", 1)}
+            for item in order_dict.get("items", [])
+        ],
+    }
 
 
 class OrderService:
@@ -119,12 +135,8 @@ class OrderService:
                 {"$setOnInsert": log_dict},
                 upsert=True,
             )
-            if TelegramService:
-                telegram_service = TelegramService()
-                try:
-                    await telegram_service.push_order_to_queue(saved)
-                except Exception as e:
-                    logger.warning(f"Failed to push order to Telegram queue: {e}")
+            if publish_alert:
+                await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(saved))
 
         await self._clear_pending_redis(order_id)
         status = "created" if created else "existing"
@@ -355,14 +367,9 @@ class OrderService:
         }
         await logs_collection.insert_one(log_dict)
         
-        # Push to Telegram queue (non-blocking, best-effort)
-        if TelegramService:
-            telegram_service = TelegramService()
-            try:
-                await telegram_service.push_order_to_queue(order_dict)
-            except Exception as e:
-                logger.warning(f"Failed to push COD order to Telegram queue: {e}")
-        
+        if publish_alert:
+            await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))
+
         logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
         # Convert shipping_address dict to DTO when creating Order
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
@@ -497,12 +504,8 @@ class OrderService:
         }
         await logs_collection.insert_one(log_dict)
 
-        if TelegramService:
-            telegram_service = TelegramService()
-            try:
-                await telegram_service.push_order_to_queue(order_dict)
-            except Exception as e:
-                logger.warning(f"Failed to push admin order to Telegram queue: {e}")
+        if publish_alert:
+            await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))
 
         logger.info(f"Admin order created: {order_id}")
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
