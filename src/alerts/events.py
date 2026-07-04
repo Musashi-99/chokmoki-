@@ -9,6 +9,9 @@ ALERTS_STREAM_KEY = "chokmoki:alerts:stream"
 
 EVENT_ORDER_CREATED = "order.created"
 EVENT_ADMIN_MUTATION = "admin.mutation"
+EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
+EVENT_CONTACT_SUBMITTED = "contact.submitted"
+EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
 
 
 async def publish_alert(event_type: str, payload: Dict[str, Any]) -> Optional[str]:

@@ -6,6 +6,13 @@ from src.models.product import JewelryProduct, JewelryProductCreate
 from src.plugins.logger import logger
 from src.utils.regex_safe import escape_mongo_regex
 
+# Optional alerts import
+try:
+    from src.alerts.events import EVENT_PRODUCT_PRICE_CHANGED, publish_alert
+except ImportError:
+    EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
+    publish_alert = None
+
 
 class ProductService:
     COLLECTION_NAME = "products"
@@ -192,12 +199,27 @@ class ProductService:
             if existing:
                 raise ValueError(f"Product with slug '{payload['slug']}' already exists")
 
+        before = await collection.find_one(product_filter) if "price_inr" in payload else None
+
         result = await collection.update_one(product_filter, {"$set": payload})
 
         if result.matched_count == 0:
             return None
         saved = await collection.find_one(product_filter)
-        return JewelryProduct(**saved) if saved else None
+        updated = JewelryProduct(**saved) if saved else None
+
+        if updated and before is not None:
+            old_price = before.get("price_inr")
+            new_price = updated.price_inr
+            if old_price != new_price and publish_alert:
+                await publish_alert(EVENT_PRODUCT_PRICE_CHANGED, {
+                    "product_id": str(updated.id) if getattr(updated, "id", None) else product_id,
+                    "product_name": updated.name,
+                    "old_price": old_price,
+                    "new_price": new_price,
+                })
+
+        return updated
     
     async def delete(self, product_id: str) -> bool:
         product_filter = await self._resolve_filter(product_id)

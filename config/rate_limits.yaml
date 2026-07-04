@@ -18,6 +18,11 @@ rules:
         window: 15m
         burst: 5
 
+  # Public-facing checkout. burst was 2 with a 5/hour refill — a real
+  # customer retrying a failed payment, or two people checking out from the
+  # same home/office IP, could get blocked. Fraud/abuse is caught by
+  # FraudDetectionService + idempotency, not this — this is just a volume
+  # cap, so it can afford to be generous.
   - id: orders
     match:
       methods: [POST]
@@ -25,15 +30,17 @@ rules:
       operations: [order.create, order.initiate]
     buckets:
       - scope: ip
-        rate: 5
+        rate: 30
         window: 1h
-        burst: 2
+        burst: 10
       - scope: email
         field: userEmail
-        rate: 3
+        rate: 10
         window: 1h
-        burst: 2
+        burst: 5
 
+  # Public contact form. burst was 1 with 1/hour per email — a single
+  # legitimate resubmission (typo fix, "did that send?") would get blocked.
   - id: contact
     match:
       methods: [POST]
@@ -41,15 +48,17 @@ rules:
       operations: [contact.create]
     buckets:
       - scope: ip
-        rate: 3
+        rate: 20
         window: 1h
-        burst: 1
+        burst: 5
       - scope: email
         field: email
-        rate: 1
+        rate: 5
         window: 1h
-        burst: 1
+        burst: 2
 
+  # Public newsletter signup. burst was 1 with 3/day per IP — a shared
+  # office/campus/cafe IP could only see 3 signups a day total.
   - id: newsletter
     match:
       methods: [POST]
@@ -57,12 +66,12 @@ rules:
       operations: [newsletter.subscribe]
     buckets:
       - scope: ip
-        rate: 3
+        rate: 20
         window: 24h
-        burst: 1
+        burst: 5
       - scope: email
         field: email
-        rate: 1
+        rate: 2
         window: 24h
         burst: 1
 

@@ -10,6 +10,18 @@ from src.models.inbox import (
 )
 from src.plugins.logger import logger
 
+# Optional alerts import
+try:
+    from src.alerts.events import (
+        EVENT_CONTACT_SUBMITTED,
+        EVENT_NEWSLETTER_SUBSCRIBED,
+        publish_alert,
+    )
+except ImportError:
+    EVENT_CONTACT_SUBMITTED = "contact.submitted"
+    EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
+    publish_alert = None
+
 
 class InboxService:
     CONTACT_COLLECTION = "contact_submissions"
@@ -23,6 +35,16 @@ class InboxService:
         result = await database[self.CONTACT_COLLECTION].insert_one(doc)
         doc["_id"] = result.inserted_id
         logger.info(f"Contact submission: {result.inserted_id}")
+
+        if publish_alert:
+            await publish_alert(EVENT_CONTACT_SUBMITTED, {
+                "name": doc.get("name", ""),
+                "email": doc.get("email", ""),
+                "phone": doc.get("phone", ""),
+                "message": doc.get("message", ""),
+                "note": doc.get("note", ""),
+            })
+
         return ContactSubmission(**doc)
 
     async def list_contacts(
@@ -83,6 +105,13 @@ class InboxService:
         result = await collection.insert_one(doc)
         doc["_id"] = result.inserted_id
         logger.info(f"Newsletter subscription: {email}")
+
+        if publish_alert:
+            await publish_alert(EVENT_NEWSLETTER_SUBSCRIBED, {
+                "email": email,
+                "source": data.source,
+            })
+
         return NewsletterSubscription(**doc)
 
     async def list_newsletter(

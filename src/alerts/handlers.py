@@ -4,14 +4,21 @@ from typing import Any, Dict
 
 from src.alerts.chain import AlertEvent, AlertHandler
 from src.alerts.channels import NotificationChannel
-from src.alerts.events import EVENT_ADMIN_MUTATION, EVENT_ORDER_CREATED
+from src.alerts.events import (
+    EVENT_ADMIN_MUTATION,
+    EVENT_CONTACT_SUBMITTED,
+    EVENT_NEWSLETTER_SUBSCRIBED,
+    EVENT_ORDER_CREATED,
+    EVENT_PRODUCT_PRICE_CHANGED,
+)
 from src.plugins.logger import logger
 
 # Admin-mutation resources worth a "setting changed" alert. Deliberately
 # excludes: "orders" (has its own richer alert via OrderCreatedHandler),
-# "products" (routine catalog edits — too frequent to be alert-worthy),
-# "upload" (not a setting), "fraud" (not requested yet — add its own
-# handler link later if wanted).
+# "products" (routine catalog edits are too frequent to be alert-worthy,
+# but a price change specifically gets its own richer alert via
+# PriceChangedHandler), "upload" (not a setting), "fraud" (not requested
+# yet — add its own handler link later if wanted).
 SETTINGS_RESOURCES = {
     "hero",
     "navigation",
@@ -69,6 +76,48 @@ def _format_settings_alert(payload: Dict[str, Any]) -> str:
     return f"⚙️ *Setting Updated*\n{actor} updated `{resource}`\n{method} {path}"
 
 
+def _format_price_label(value: Any) -> str:
+    return f"₹{value:,.0f}" if isinstance(value, (int, float)) else f"₹{value}"
+
+
+def _format_price_changed_alert(payload: Dict[str, Any]) -> str:
+    name = payload.get("product_name", "product")
+    old_price = _format_price_label(payload.get("old_price"))
+    new_price = _format_price_label(payload.get("new_price"))
+    actor = payload.get("actor_email")
+    lines = [
+        "💰 *Price Changed*",
+        name,
+        f"{old_price} → {new_price}",
+    ]
+    if actor:
+        lines.append(f"By: {actor}")
+    return "\n".join(lines)
+
+
+def _format_contact_alert(payload: Dict[str, Any]) -> str:
+    name = payload.get("name") or "Someone"
+    email = payload.get("email", "")
+    message = (payload.get("message") or payload.get("note") or "").strip()
+    lines = [
+        "📩 *New Contact Submission*",
+        f"{name} ({email})" if email else name,
+    ]
+    if message:
+        lines.append("")
+        lines.append(message[:500])
+    return "\n".join(lines)
+
+
+def _format_newsletter_alert(payload: Dict[str, Any]) -> str:
+    email = payload.get("email", "unknown")
+    source = payload.get("source", "")
+    lines = ["📰 *New Newsletter Signup*", email]
+    if source:
+        lines.append(f"Source: {source}")
+    return "\n".join(lines)
+
+
 class OrderCreatedHandler(AlertHandler):
     def __init__(self, channel: NotificationChannel) -> None:
         super().__init__()
@@ -99,6 +148,51 @@ class SettingsChangedHandler(AlertHandler):
         return True
 
 
+class PriceChangedHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type == EVENT_PRODUCT_PRICE_CHANGED
+
+    async def _process(self, event: AlertEvent) -> bool:
+        sent = await self._channel.send(_format_price_changed_alert(event.payload))
+        if not sent:
+            raise RuntimeError("Price-change alert channel send failed")
+        return True
+
+
+class ContactSubmittedHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type == EVENT_CONTACT_SUBMITTED
+
+    async def _process(self, event: AlertEvent) -> bool:
+        sent = await self._channel.send(_format_contact_alert(event.payload))
+        if not sent:
+            raise RuntimeError("Contact alert channel send failed")
+        return True
+
+
+class NewsletterSubscribedHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type == EVENT_NEWSLETTER_SUBSCRIBED
+
+    async def _process(self, event: AlertEvent) -> bool:
+        sent = await self._channel.send(_format_newsletter_alert(event.payload))
+        if not sent:
+            raise RuntimeError("Newsletter alert channel send failed")
+        return True
+
+
 class FallbackHandler(AlertHandler):
     """End of the chain — always matches. Logs and drops anything nobody
     else claimed (unknown event types, or admin mutations on resources
@@ -117,8 +211,17 @@ class FallbackHandler(AlertHandler):
 
 def build_chain(channel: NotificationChannel) -> AlertHandler:
     order_handler = OrderCreatedHandler(channel)
+    price_handler = PriceChangedHandler(channel)
+    contact_handler = ContactSubmittedHandler(channel)
+    newsletter_handler = NewsletterSubscribedHandler(channel)
     settings_handler = SettingsChangedHandler(channel)
     fallback_handler = FallbackHandler()
 
-    order_handler.set_next(settings_handler).set_next(fallback_handler)
+    (
+        order_handler.set_next(price_handler)
+        .set_next(contact_handler)
+        .set_next(newsletter_handler)
+        .set_next(settings_handler)
+        .set_next(fallback_handler)
+    )
     return order_handler
