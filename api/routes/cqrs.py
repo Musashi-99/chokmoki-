@@ -7,7 +7,11 @@ from pydantic import BaseModel, ValidationError
 import json
 from api.bootstrap import AuthorizationError, CQRSRouter, logger, settings
 from api.json_utils import JSONEncoder
-from src.security.idempotency import IdempotencyConflictError, IdempotencyService
+from src.security.idempotency import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    IdempotencyService,
+)
 
 router = APIRouter()
 
@@ -58,6 +62,11 @@ async def handle_request(request: APIRequest):
             except IdempotencyConflictError:
                 raise HTTPException(
                     status_code=409, detail="Idempotency-Key reused with different payload"
+                )
+            except IdempotencyInProgressError:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A request with this Idempotency-Key is already being processed",
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

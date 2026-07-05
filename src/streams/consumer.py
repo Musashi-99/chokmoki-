@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from typing import Any, Awaitable, Callable, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from src.database.redis_connection import redis_client
+import redis.asyncio as redis_asyncio
+
+from src.config import settings
 from src.plugins.logger import logger
 
 BLOCK_MS = 5000
@@ -37,6 +39,32 @@ class StreamConsumer:
         self._handler = handler
         self._consumer_name = f"{socket.gethostname()}-{id(self)}"
         self._loops_since_claim = 0
+        self._redis: Optional[redis_asyncio.Redis] = None
+
+    async def _get_redis(self) -> redis_asyncio.Redis:
+        """A dedicated connection, deliberately NOT the shared app-wide pool.
+
+        XREADGROUP with BLOCK holds a connection open for up to BLOCK_MS
+        waiting for new entries — that's normal for a stream consumer, but
+        it must never share a pool sized for short-lived request-serving
+        calls (whose socket_timeout is much shorter than BLOCK_MS, causing
+        spurious client-side timeouts) or compete with request traffic for
+        a small number of connections.
+        """
+        if self._redis is None:
+            self._redis = redis_asyncio.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=(BLOCK_MS / 1000) + 5,
+                max_connections=1,
+            )
+        return self._redis
+
+    async def _close_redis(self) -> None:
+        if self._redis is not None:
+            await self._redis.close()
+            self._redis = None
 
     async def _ensure_group(self, redis: Any) -> None:
         try:
@@ -91,7 +119,7 @@ class StreamConsumer:
                 await redis.xack(self._stream_key, self._group_name, entry_id)
 
     async def run(self) -> None:
-        redis = await redis_client.get_client()
+        redis = await self._get_redis()
         await self._ensure_group(redis)
         if logger:
             logger.info(
@@ -125,5 +153,6 @@ class StreamConsumer:
                         logger.error(f"Stream consumer loop error on '{self._stream_key}': {e}")
                     await asyncio.sleep(2)
         finally:
+            await self._close_redis()
             if logger:
                 logger.info(f"Stream consumer '{self._consumer_name}' stopped")

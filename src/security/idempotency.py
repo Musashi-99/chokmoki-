@@ -15,6 +15,15 @@ class IdempotencyConflictError(Exception):
     """Raised when the same key is reused with a different request body."""
 
 
+class IdempotencyInProgressError(Exception):
+    """Raised when another in-flight request already holds the lock for this
+    key and hasn't stored a result yet. The caller must NOT proceed to
+    process the request too — that would defeat the whole point of the
+    lock and risk duplicate side effects (e.g. two orders from one
+    double-click or client retry racing on the same Idempotency-Key).
+    """
+
+
 @dataclass(frozen=True)
 class IdempotencyRecord:
     fingerprint: str
@@ -71,6 +80,11 @@ class IdempotencyService:
                     status_code=int(data["status_code"]),
                     body=data["body"],
                 )
+            # Someone else holds the lock and hasn't finished yet — this
+            # caller must not also proceed to process the request.
+            raise IdempotencyInProgressError(
+                "A request with this Idempotency-Key is already being processed"
+            )
         return None
 
     async def store(

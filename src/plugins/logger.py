@@ -32,6 +32,9 @@ class LoggerSidecar:
     
     def debug(self, message: str, *args: Any, **kwargs: Any):
         self._logger.debug(message, *args, **kwargs)
+
+    def exception(self, message: str, *args: Any, **kwargs: Any):
+        self._logger.error(message, *args, **kwargs)
     
     @classmethod
     def get_instance(cls):

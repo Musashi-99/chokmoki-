@@ -3,10 +3,21 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, Optional
 import json
-from api.bootstrap import OrderCreateInput, OrderService, RazorpayService, logger, settings
+from api.bootstrap import (
+    OrderCreateInput,
+    OrderService,
+    RazorpayService,
+    get_client_ip,
+    logger,
+    settings,
+)
 from api.json_utils import JSONEncoder
 
-from src.security.idempotency import IdempotencyConflictError, IdempotencyService
+from src.security.idempotency import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    IdempotencyService,
+)
 
 router = APIRouter()
 
@@ -38,13 +49,19 @@ async def api_create_order(request: Request, payload: Dict[str, Any]):
                 return JSONResponse(status_code=cached.status_code, content=cached.body)
         except IdempotencyConflictError:
             raise HTTPException(status_code=409, detail="Idempotency-Key reused with different payload")
+        except IdempotencyInProgressError:
+            raise HTTPException(
+                status_code=409,
+                detail="A request with this Idempotency-Key is already being processed",
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         order_data = OrderCreateInput(**payload)
         service = OrderService()
-        order = await service.create(order_data)
+        client_ip = get_client_ip(request) if get_client_ip else None
+        order = await service.create(order_data, ip=client_ip)
     except HTTPException:
         if idem_storage_key:
             await idem_service.release_lock(idem_storage_key)

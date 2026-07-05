@@ -1,11 +1,19 @@
 """Admin order management + dashboard stats."""
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 import json
-from api.bootstrap import OrderService, OrderStatus, ProductService, db, logger, require_admin
+from api.bootstrap import (
+    OrderService,
+    OrderStatus,
+    ProductService,
+    db,
+    get_client_ip,
+    logger,
+    require_admin,
+)
 from api.json_utils import JSONEncoder
 
 router = APIRouter()
@@ -43,7 +51,7 @@ async def admin_list_orders(
 
 @router.post("/api/admin/orders")
 async def admin_create_order(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    request: Request, payload: Dict[str, Any], email: str = Depends(require_admin)
 ):
     """Create an order from the admin dashboard (phone / manual orders)."""
     if OrderService is None:
@@ -51,7 +59,8 @@ async def admin_create_order(
 
     try:
         service = OrderService()
-        order = await service.create_from_admin(payload)
+        client_ip = get_client_ip(request) if get_client_ip else None
+        order = await service.create_from_admin(payload, ip=client_ip)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

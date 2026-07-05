@@ -27,7 +27,7 @@ rules:
     match:
       methods: [POST]
       paths: [/api/orders, /]
-      operations: [order.create, order.initiate]
+      operations: [order.create, order.initiate, order.verifyPayment]
     buckets:
       - scope: ip
         rate: 30
