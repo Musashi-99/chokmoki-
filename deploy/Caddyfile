@@ -1,0 +1,16 @@
+chokmoki.com, www.chokmoki.com {
+    reverse_proxy host.docker.internal:3000
+}
+
+api.chokmoki.com {
+    # Overwrite X-Real-IP with the actual TCP client address Caddy sees.
+    # Without this, a client can set their own X-Real-IP header and it
+    # passes straight through to the backend unchanged — Caddy does NOT
+    # set this header by default (unlike nginx). The backend trusts
+    # X-Real-IP for rate limiting and fraud-detection IP rules
+    # (TRUSTED_PROXY_ENABLED=true in .env), so this must always overwrite
+    # any client-supplied value, never just add to it.
+    reverse_proxy host.docker.internal:8000 {
+        header_up X-Real-IP {remote_host}
+    }
+}

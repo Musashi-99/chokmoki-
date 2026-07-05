@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     csrf_enabled: bool = Field(default=True, env="CSRF_ENABLED")
     admin_cookie_samesite: str = Field(default="lax", env="ADMIN_COOKIE_SAMESITE")
     admin_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_COOKIE_DOMAIN")
+    # Separate from admin_cookie_domain on purpose: the CSRF cookie is the
+    # only one JS ever needs to read (httponly=False, by design, so the SPA
+    # can echo it back as X-CSRF-Token). If the admin frontend and API live
+    # on different hostnames (e.g. www.chokmoki.com vs api.chokmoki.com),
+    # this MUST be a shared parent domain (".chokmoki.com") or
+    # document.cookie on the frontend can never see it — cookies are
+    # readable by JS only on their own exact hostname, regardless of
+    # SameSite/CORS. The access/refresh cookies stay host-only (narrower,
+    # safer) since they're httponly and only ever sent back to the API.
+    admin_csrf_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_CSRF_COOKIE_DOMAIN")
     admin_cookie_secure: Optional[bool] = Field(default=None, env="ADMIN_COOKIE_SECURE")
     admin_legacy_bearer_enabled: bool = Field(
         default=False, env="ADMIN_LEGACY_BEARER_ENABLED"
