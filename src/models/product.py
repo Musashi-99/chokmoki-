@@ -66,6 +66,9 @@ class JewelryProduct(BaseModel):
     best_seller_order: int = 0
     curated_order: int = 0
     weight_grams: Optional[float] = None
+    package_length_cm: Optional[float] = None
+    package_breadth_cm: Optional[float] = None
+    package_height_cm: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"
     stock_qty: Optional[int] = None
@@ -104,6 +107,9 @@ class JewelryProductCreate(BaseModel):
     best_seller_order: int = 0
     curated_order: int = 0
     weight_grams: Optional[float] = None
+    package_length_cm: Optional[float] = None
+    package_breadth_cm: Optional[float] = None
+    package_height_cm: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
     stock_status: str = "in_stock"
     stock_qty: Optional[int] = None
@@ -135,6 +141,9 @@ class JewelryProductUpdate(StrictUpdateModel):
     best_seller_order: Optional[int] = None
     curated_order: Optional[int] = None
     weight_grams: Optional[float] = None
+    package_length_cm: Optional[float] = None
+    package_breadth_cm: Optional[float] = None
+    package_height_cm: Optional[float] = None
     purity: Optional[str] = None
     stock_status: Optional[str] = None
     stock_qty: Optional[int] = None

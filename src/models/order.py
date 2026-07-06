@@ -136,10 +136,12 @@ class Order(BaseModel):
         "delivered",
         "rto_initiated",
         "rto_delivered",
+        "cancellation_requested",
         "cancelled",
         "failed",
     ] = "pending"
     shipment_status_history: List[Dict[str, Any]] = Field(default_factory=list)
+    shipment_scans: List[Dict[str, Any]] = Field(default_factory=list)
 
     model_config = {
         "populate_by_name": True,

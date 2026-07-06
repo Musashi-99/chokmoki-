@@ -64,6 +64,10 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    # Directory for on-disk log files (rotated), mounted as a Docker volume
+    # so logs survive container restarts/rebuilds and can be pulled off the
+    # server independently of `docker logs` (which is not persistent).
+    log_dir: str = Field(default="/app/logs", env="LOG_DIR")
 
     # Razorpay
     razorpay_key_id: str = Field(..., env="RAZORPAY_KEY_ID")

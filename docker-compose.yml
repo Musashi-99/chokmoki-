@@ -43,6 +43,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - backend_logs:/app/logs
     depends_on:
       mongodb:
         condition: service_healthy
@@ -52,3 +54,4 @@ services:
 volumes:
   mongodb_data:
   redis_data:
+  backend_logs:

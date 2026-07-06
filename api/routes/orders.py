@@ -184,39 +184,82 @@ async def razorpay_webhook(
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
-@router.post("/webhook/shiprocket")
+@router.get("/webhook/courier-updates")
+async def shiprocket_webhook_probe(request: Request):
+    """Some webhook dashboards (Shiprocket's included, unconfirmed) do a GET
+    reachability check against the URL before letting you save it. The real
+    delivery is always POST; this just avoids a 405 breaking that check.
+    """
+    if logger:
+        logger.info(
+            f"Shiprocket webhook GET probe from {request.client.host if request.client else 'unknown'}"
+        )
+    return JSONResponse(content={"status": "ok"})
+
+
+@router.post("/webhook/courier-updates")
 async def shiprocket_webhook(request: Request, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
     """Shiprocket shipment status webhook.
 
     Per Shiprocket's own docs this URL "should respond with only code 200"
     regardless of outcome (their retry/delivery system treats anything else
     as a delivery failure) — so auth failures and processing errors are
-    logged, never surfaced as a non-200 status.
+    logged, never surfaced as a non-200 status. Everything here is logged
+    verbosely (headers, raw body, outcome) since this is the only vantage
+    point to debug delivery issues from Shiprocket's side.
     """
+    client_host = request.client.host if request.client else "unknown"
+    raw_body = await request.body()
+
+    if logger:
+        logger.info(
+            f"Shiprocket webhook POST received from {client_host} | "
+            f"content-length={len(raw_body)} | "
+            f"x-api-key present={bool(x_api_key)} len={len(x_api_key) if x_api_key else 0}"
+        )
+        logger.debug(f"Shiprocket webhook raw body: {raw_body[:4000]!r}")
+
     if ShiprocketService is None:
+        if logger:
+            logger.warning("Shiprocket webhook: ShiprocketService not available (not initialized)")
         return JSONResponse(content={"status": "ignored"})
 
     try:
         service = ShiprocketService()
-    except Exception:
+    except Exception as e:
+        if logger:
+            logger.warning(f"Shiprocket webhook: service init failed (likely disabled/misconfigured): {e}")
         return JSONResponse(content={"status": "ignored"})
 
     if not service.verify_webhook_token(x_api_key):
         if logger:
-            logger.warning("Shiprocket webhook rejected: invalid or missing x-api-key")
+            logger.warning(
+                f"Shiprocket webhook rejected: invalid or missing x-api-key from {client_host} "
+                f"(received len={len(x_api_key) if x_api_key else 0})"
+            )
         return JSONResponse(content={"status": "ok"})
 
     try:
-        body = await request.json()
-    except Exception:
+        import json as _json
+        body = _json.loads(raw_body)
+    except Exception as e:
         if logger:
-            logger.warning("Shiprocket webhook: invalid JSON body")
+            logger.warning(f"Shiprocket webhook: invalid JSON body from {client_host}: {e}")
         return JSONResponse(content={"status": "ok"})
+
+    if logger:
+        logger.info(
+            f"Shiprocket webhook payload | order_id={body.get('order_id')} "
+            f"current_status={body.get('current_status') or body.get('shipment_status')} "
+            f"awb={body.get('awb')} scans_count={len(body.get('scans') or [])}"
+        )
 
     try:
         await service.handle_webhook(body)
+        if logger:
+            logger.info(f"Shiprocket webhook processed successfully for order_id={body.get('order_id')}")
     except Exception as e:
         if logger:
-            logger.error(f"Shiprocket webhook processing error: {e}")
+            logger.exception(f"Shiprocket webhook processing error for order_id={body.get('order_id')}: {e}")
 
     return JSONResponse(content={"status": "ok"})

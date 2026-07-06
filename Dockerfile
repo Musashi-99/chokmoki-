@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir /wheels/* \
     && rm -rf /wheels
 
 COPY . .
-RUN chown -R app:app /app
+RUN mkdir -p /app/logs && chown -R app:app /app
 
 USER app
 

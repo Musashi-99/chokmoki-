@@ -113,16 +113,37 @@ class ShiprocketClient:
             raise ShiprocketAPIError("Shiprocket request produced no response")
 
         if resp.status_code >= 400:
+            body = self._safe_json(resp)
             if logger:
                 logger.error(
                     f"Shiprocket API error {method} {path}: {resp.status_code} {resp.text[:500]}"
                 )
             raise ShiprocketAPIError(
-                f"Shiprocket API error: {resp.status_code}",
+                f"Shiprocket API error {resp.status_code}: {self._extract_error_message(body)}",
                 status_code=resp.status_code,
-                payload=self._safe_json(resp),
+                payload=body,
             )
         return self._safe_json(resp)
+
+    @staticmethod
+    def _extract_error_message(body: Any) -> str:
+        """Shiprocket's real, human-readable reason lives in body["message"]
+        (and per-field validation reasons in body["errors"]) — without this,
+        every 4xx/5xx only ever surfaced as "Shiprocket API error: <code>",
+        discarding e.g. "Oops! Cannot reassign courier for this shipment."
+        or "The shipment id field is required." entirely.
+        """
+        if not isinstance(body, dict):
+            return str(body)
+        message = body.get("message") or "Unknown error"
+        errors = body.get("errors")
+        if isinstance(errors, dict) and errors:
+            detail = "; ".join(
+                f"{field}: {', '.join(msgs) if isinstance(msgs, list) else msgs}"
+                for field, msgs in errors.items()
+            )
+            return f"{message} ({detail})"
+        return message
 
     # ---- endpoints ----
 
@@ -139,6 +160,15 @@ class ShiprocketClient:
             "cod": 1 if cod else 0,
         }
         data = await self._request("GET", "/courier/serviceability/", params=params)
+        # Shiprocket can return 200 OK with an error body here — e.g.
+        # {"status": 404, "message": "Order does not exist!"} — no "data"
+        # key at all. Silently treating that as "no couriers" would hide
+        # the real reason from the admin; surface it instead.
+        if data and "data" not in data:
+            message = data.get("message") or data
+            if logger:
+                logger.error(f"Shiprocket serviceability check returned no data: {data}")
+            raise ShiprocketAPIError(f"Shiprocket serviceability check failed: {message}", payload=data)
         return ((data or {}).get("data") or {}).get("available_courier_companies") or []
 
     async def assign_awb(self, *, shipment_id: int, courier_id: Optional[int] = None) -> Dict[str, Any]:
