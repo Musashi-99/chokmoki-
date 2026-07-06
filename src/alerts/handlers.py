@@ -10,6 +10,7 @@ from src.alerts.events import (
     EVENT_NEWSLETTER_SUBSCRIBED,
     EVENT_ORDER_CREATED,
     EVENT_PRODUCT_PRICE_CHANGED,
+    EVENT_SHIPMENT_UPDATE,
 )
 from src.plugins.logger import logger
 
@@ -118,6 +119,21 @@ def _format_newsletter_alert(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_shipment_alert(payload: Dict[str, Any]) -> str:
+    order_id = payload.get("order_id", "unknown")
+    status = (payload.get("status") or "unknown").replace("_", " ").title()
+    lines = [
+        "📦 *Shipment Update*",
+        f"Order: `{order_id}`",
+        f"Status: {status}",
+    ]
+    if payload.get("courier_name"):
+        lines.append(f"Courier: {payload['courier_name']}")
+    if payload.get("awb_code"):
+        lines.append(f"AWB: {payload['awb_code']}")
+    return "\n".join(lines)
+
+
 class OrderCreatedHandler(AlertHandler):
     def __init__(self, channel: NotificationChannel) -> None:
         super().__init__()
@@ -193,6 +209,21 @@ class NewsletterSubscribedHandler(AlertHandler):
         return True
 
 
+class ShipmentUpdateHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type == EVENT_SHIPMENT_UPDATE
+
+    async def _process(self, event: AlertEvent) -> bool:
+        sent = await self._channel.send(_format_shipment_alert(event.payload))
+        if not sent:
+            raise RuntimeError("Shipment alert channel send failed")
+        return True
+
+
 class FallbackHandler(AlertHandler):
     """End of the chain — always matches. Logs and drops anything nobody
     else claimed (unknown event types, or admin mutations on resources
@@ -214,6 +245,7 @@ def build_chain(channel: NotificationChannel) -> AlertHandler:
     price_handler = PriceChangedHandler(channel)
     contact_handler = ContactSubmittedHandler(channel)
     newsletter_handler = NewsletterSubscribedHandler(channel)
+    shipment_handler = ShipmentUpdateHandler(channel)
     settings_handler = SettingsChangedHandler(channel)
     fallback_handler = FallbackHandler()
 
@@ -221,6 +253,7 @@ def build_chain(channel: NotificationChannel) -> AlertHandler:
         order_handler.set_next(price_handler)
         .set_next(contact_handler)
         .set_next(newsletter_handler)
+        .set_next(shipment_handler)
         .set_next(settings_handler)
         .set_next(fallback_handler)
     )

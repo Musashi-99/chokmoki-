@@ -114,7 +114,33 @@ class Order(BaseModel):
     status: OrderStatus = Field(default_factory=lambda: OrderStatus(type="accepted"))
     created_at: datetime = Field(default_factory=datetime.utcnow)
     raw_order_log: Dict[str, Any]  # Keep as dict for raw log flexibility
-    
+
+    # --- Warehouse fulfillment + Shiprocket shipping (independent of
+    # payment_status and status.type — see src/services/shiprocket_service.py)
+    fulfillment_status: Literal["pending", "packed", "shipped"] = "pending"
+    shiprocket_order_id: Optional[int] = None
+    shiprocket_shipment_id: Optional[int] = None
+    awb_code: Optional[str] = None
+    courier_name: Optional[str] = None
+    courier_company_id: Optional[int] = None
+    tracking_url: Optional[str] = None
+    shipping_label_url: Optional[str] = None
+    shipping_invoice_url: Optional[str] = None
+    shipment_status: Literal[
+        "pending",
+        "awb_assigned",
+        "pickup_scheduled",
+        "picked_up",
+        "in_transit",
+        "out_for_delivery",
+        "delivered",
+        "rto_initiated",
+        "rto_delivered",
+        "cancelled",
+        "failed",
+    ] = "pending"
+    shipment_status_history: List[Dict[str, Any]] = Field(default_factory=list)
+
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,

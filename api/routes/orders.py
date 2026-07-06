@@ -7,6 +7,7 @@ from api.bootstrap import (
     OrderCreateInput,
     OrderService,
     RazorpayService,
+    ShiprocketService,
     get_client_ip,
     logger,
     settings,
@@ -181,3 +182,41 @@ async def razorpay_webhook(
         if logger:
             logger.error(f"Webhook processing error: {e}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+@router.post("/webhook/shiprocket")
+async def shiprocket_webhook(request: Request, x_api_key: Optional[str] = Header(None, alias="x-api-key")):
+    """Shiprocket shipment status webhook.
+
+    Per Shiprocket's own docs this URL "should respond with only code 200"
+    regardless of outcome (their retry/delivery system treats anything else
+    as a delivery failure) — so auth failures and processing errors are
+    logged, never surfaced as a non-200 status.
+    """
+    if ShiprocketService is None:
+        return JSONResponse(content={"status": "ignored"})
+
+    try:
+        service = ShiprocketService()
+    except Exception:
+        return JSONResponse(content={"status": "ignored"})
+
+    if not service.verify_webhook_token(x_api_key):
+        if logger:
+            logger.warning("Shiprocket webhook rejected: invalid or missing x-api-key")
+        return JSONResponse(content={"status": "ok"})
+
+    try:
+        body = await request.json()
+    except Exception:
+        if logger:
+            logger.warning("Shiprocket webhook: invalid JSON body")
+        return JSONResponse(content={"status": "ok"})
+
+    try:
+        await service.handle_webhook(body)
+    except Exception as e:
+        if logger:
+            logger.error(f"Shiprocket webhook processing error: {e}")
+
+    return JSONResponse(content={"status": "ok"})

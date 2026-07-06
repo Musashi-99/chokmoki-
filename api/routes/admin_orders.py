@@ -9,12 +9,14 @@ from api.bootstrap import (
     OrderService,
     OrderStatus,
     ProductService,
+    ShiprocketAPIError,
+    ShiprocketService,
     db,
     get_client_ip,
     logger,
     require_admin,
 )
-from api.json_utils import JSONEncoder
+from api.json_utils import JSONEncoder, _json_response_content
 
 router = APIRouter()
 
@@ -165,3 +167,114 @@ async def admin_get_stats(email: str = Depends(require_admin)):
         "totalProducts": total_products,
         "activeProducts": active_products,
     }, cls=JSONEncoder)))
+
+
+# ========== Shiprocket fulfillment (admin-driven) ==========
+
+@router.post("/api/admin/orders/{order_id}/pack")
+async def admin_mark_order_packed(order_id: str, email: str = Depends(require_admin)):
+    """Mark an order as physically packed — no Shiprocket calls yet."""
+    if OrderService is None or db is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = OrderService()
+    order = await service.get_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    database = await db.get_database()
+    await database["orders"].update_one(
+        {"order_id": order.order_id}, {"$set": {"fulfillment_status": "packed"}}
+    )
+    return {"success": True, "fulfillment_status": "packed"}
+
+
+@router.get("/api/admin/orders/{order_id}/shiprocket/couriers")
+async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_admin)):
+    """Live courier quotes for the 'Ready to Ship' picker — no shipment created yet."""
+    if OrderService is None or ShiprocketService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    database = await db.get_database()
+    order_doc = await database["orders"].find_one({"order_id": order_id})
+    if not order_doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    try:
+        quotes = await ShiprocketService().get_courier_quotes(order_doc)
+    except ShiprocketAPIError as e:
+        # 400, not 502: Shiprocket failures here are business-rule rejections
+        # an admin can act on (wallet balance, bad pickup config, no couriers
+        # serviceable, etc) — not a security-sensitive internal error, so the
+        # real message must reach the UI. 5xx details get redacted by
+        # src/security/error_handling.py's sanitizer; 4xx details don't.
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"data": quotes, "count": len(quotes)}
+
+
+@router.post("/api/admin/orders/{order_id}/shiprocket/ship")
+async def admin_ship_order(
+    order_id: str, payload: Optional[Dict[str, Any]] = None, email: str = Depends(require_admin)
+):
+    """'Ready to Ship': create the shipment, assign AWB (auto or the given
+    courier_company_id), generate label + invoice, schedule pickup.
+    """
+    if OrderService is None or ShiprocketService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    payload = payload or {}
+    courier_company_id = payload.get("courier_company_id")
+
+    try:
+        result = await ShiprocketService().ship_order(order_id, courier_company_id=courier_company_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ShiprocketAPIError as e:
+        # 400, not 502: Shiprocket failures here are business-rule rejections
+        # an admin can act on (wallet balance, bad pickup config, no couriers
+        # serviceable, etc) — not a security-sensitive internal error, so the
+        # real message must reach the UI. 5xx details get redacted by
+        # src/security/error_handling.py's sanitizer; 4xx details don't.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if logger:
+            logger.error(f"Shiprocket ship_order failed for {order_id}: {e}")
+        raise HTTPException(status_code=500) from e
+
+    return _json_response_content(result)
+
+
+@router.post("/api/admin/orders/{order_id}/shiprocket/cancel")
+async def admin_cancel_shipment(order_id: str, email: str = Depends(require_admin)):
+    if ShiprocketService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        result = await ShiprocketService().cancel_shipment(order_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ShiprocketAPIError as e:
+        # 400, not 502: Shiprocket failures here are business-rule rejections
+        # an admin can act on (wallet balance, bad pickup config, no couriers
+        # serviceable, etc) — not a security-sensitive internal error, so the
+        # real message must reach the UI. 5xx details get redacted by
+        # src/security/error_handling.py's sanitizer; 4xx details don't.
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@router.get("/api/admin/orders/{order_id}/shiprocket/track")
+async def admin_track_shipment(order_id: str, email: str = Depends(require_admin)):
+    if ShiprocketService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        tracking = await ShiprocketService().track(order_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ShiprocketAPIError as e:
+        # 400, not 502: Shiprocket failures here are business-rule rejections
+        # an admin can act on (wallet balance, bad pickup config, no couriers
+        # serviceable, etc) — not a security-sensitive internal error, so the
+        # real message must reach the UI. 5xx details get redacted by
+        # src/security/error_handling.py's sanitizer; 4xx details don't.
+        raise HTTPException(status_code=400, detail=str(e))
+    return _json_response_content(tracking)

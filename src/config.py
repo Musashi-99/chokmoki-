@@ -78,6 +78,34 @@ class Settings(BaseSettings):
         default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL"
     )
 
+    # Shiprocket
+    shiprocket_enabled: bool = Field(default=False, env="SHIPROCKET_ENABLED")
+    shiprocket_email: Optional[str] = Field(default=None, env="SHIPROCKET_EMAIL")
+    shiprocket_password: Optional[str] = Field(default=None, env="SHIPROCKET_PASSWORD")
+    # Must exactly match a pickup location name already configured in the
+    # Shiprocket dashboard (Settings > Pickup Addresses) — required on every
+    # order-create call.
+    shiprocket_pickup_location: Optional[str] = Field(default=None, env="SHIPROCKET_PICKUP_LOCATION")
+    # The pincode of that SAME pickup location — the order-create call takes
+    # the location by name, but the courier-serviceability quote call needs
+    # the actual pickup postcode, so both are required.
+    shiprocket_pickup_pincode: Optional[str] = Field(default=None, env="SHIPROCKET_PICKUP_PINCODE")
+    # Shared secret Shiprocket sends back as the `x-api-key` header on every
+    # webhook call (configured in their dashboard under Settings > API >
+    # Webhooks). Not an HMAC signature — a static token compare.
+    shiprocket_webhook_token: Optional[str] = Field(default=None, env="SHIPROCKET_WEBHOOK_TOKEN")
+    # Fallback package dimensions/weight when product data doesn't have them
+    # (Product.weight_grams is frequently unset, and we don't collect
+    # per-order package dimensions at checkout).
+    shiprocket_default_weight_kg: float = Field(default=0.3, env="SHIPROCKET_DEFAULT_WEIGHT_KG")
+    shiprocket_default_length_cm: float = Field(default=15.0, env="SHIPROCKET_DEFAULT_LENGTH_CM")
+    shiprocket_default_breadth_cm: float = Field(default=10.0, env="SHIPROCKET_DEFAULT_BREADTH_CM")
+    shiprocket_default_height_cm: float = Field(default=5.0, env="SHIPROCKET_DEFAULT_HEIGHT_CM")
+    # Used only when the admin doesn't manually pick a courier on "Ready to Ship".
+    shiprocket_default_courier_selection: str = Field(
+        default="cheapest", env="SHIPROCKET_DEFAULT_COURIER_SELECTION"
+    )
+
     # R2 / S3
     r2_account_id: str = Field(default="", env="R2_ACCOUNT_ID")
     r2_access_key_id: str = Field(default="", env="R2_ACCESS_KEY_ID")
