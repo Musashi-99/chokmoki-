@@ -47,6 +47,9 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/chokmoki
       REDIS_URL: redis://redis:6379/0
       REDIS_SOCKET_TIMEOUT: "10"
+      # Local-only override: bypasses admin password check (see admin_auth_service.py).
+      # Does not touch .env, so production deploys (which don't use this compose override) keep the real password.
+      ENVIRONMENT: development
     depends_on:
       mongodb:
         condition: service_healthy

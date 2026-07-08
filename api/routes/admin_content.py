@@ -1,8 +1,10 @@
 """Admin CRUD for storefront content (hero, nav, policies, pages, journal, etc)."""
 from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 import json
+import httpx
 from api.bootstrap import BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, require_admin, require_update_fields, settings
 from api.json_utils import JSONEncoder, _json_response_content
 
@@ -768,3 +770,42 @@ async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admi
     if not deleted:
         raise HTTPException(status_code=404, detail="Blog post not found")
     return {"success": True}
+
+
+ASSET_PROXY_ALLOWED_HOSTS = {"cdn.amplifycheckout.com", "images.unsplash.com"}
+
+
+@router.get("/api/admin/asset-proxy")
+async def admin_asset_proxy(url: str, email: str = Depends(require_admin)):
+    """Stream a content asset (product/category image or video) server-side.
+
+    The full site-content export runs in the browser, and the CDN does not send
+    CORS headers, so a direct `fetch()` from the admin app fails for every
+    asset. Proxying through the API (same origin as the admin app, no browser
+    CORS check) lets the export actually capture the real images/videos.
+    Restricted to known CDN hosts to avoid becoming an open SSRF proxy.
+    """
+    host = urlparse(url).hostname or ""
+    if host not in ASSET_PROXY_ALLOWED_HOSTS:
+        raise HTTPException(status_code=400, detail="Asset host not allowed")
+
+    client = httpx.AsyncClient(timeout=30.0)
+    req = client.build_request("GET", url)
+    resp = await client.send(req, stream=True)
+    if resp.status_code != 200:
+        await resp.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Upstream {resp.status_code}")
+
+    async def stream():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        stream(),
+        media_type=resp.headers.get("content-type", "application/octet-stream"),
+    )

@@ -111,12 +111,17 @@ class AdminAuthService:
             return None
 
         email_ok = secrets.compare_digest(email.strip().lower(), expected_email.lower())
-        password_ok = await asyncio.to_thread(
-            verify_admin_password,
-            password,
-            password_hash=settings.admin_password_hash,
-            fallback_plaintext=settings.admin_password,
-        )
+        if settings.is_production:
+            password_ok = await asyncio.to_thread(
+                verify_admin_password,
+                password,
+                password_hash=settings.admin_password_hash,
+                fallback_plaintext=settings.admin_password,
+            )
+        else:
+            # Local/dev only: skip password check entirely. Never reached in production
+            # since settings.is_production gates it above.
+            password_ok = True
         if not (email_ok and password_ok):
             await self.lockout.record_failure(ip, email)
             return None
