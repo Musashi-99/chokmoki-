@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict
 from api.bootstrap import FraudReviewService, require_admin
+from api.json_utils import _json_response_content
 
 router = APIRouter()
 
@@ -16,7 +17,7 @@ async def admin_list_fraud_reviews(
     if FraudReviewService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     reviews = await FraudReviewService().list_pending(skip=skip, limit=limit)
-    return JSONResponse(content={"data": reviews, "count": len(reviews)})
+    return JSONResponse(content=_json_response_content({"data": reviews, "count": len(reviews)}))
 
 
 @router.post("/api/admin/fraud/reviews/{review_id}/resolve")

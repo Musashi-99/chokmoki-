@@ -12,6 +12,7 @@ EVENT_ADMIN_MUTATION = "admin.mutation"
 EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
 EVENT_CONTACT_SUBMITTED = "contact.submitted"
 EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
+EVENT_SHIPMENT_UPDATE = "shipment.updated"
 
 
 async def publish_alert(event_type: str, payload: Dict[str, Any]) -> Optional[str]:

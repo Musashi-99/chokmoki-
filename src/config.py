@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     csrf_enabled: bool = Field(default=True, env="CSRF_ENABLED")
     admin_cookie_samesite: str = Field(default="lax", env="ADMIN_COOKIE_SAMESITE")
     admin_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_COOKIE_DOMAIN")
+    # Separate from admin_cookie_domain on purpose: the CSRF cookie is the
+    # only one JS ever needs to read (httponly=False, by design, so the SPA
+    # can echo it back as X-CSRF-Token). If the admin frontend and API live
+    # on different hostnames (e.g. www.chokmoki.com vs api.chokmoki.com),
+    # this MUST be a shared parent domain (".chokmoki.com") or
+    # document.cookie on the frontend can never see it — cookies are
+    # readable by JS only on their own exact hostname, regardless of
+    # SameSite/CORS. The access/refresh cookies stay host-only (narrower,
+    # safer) since they're httponly and only ever sent back to the API.
+    admin_csrf_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_CSRF_COOKIE_DOMAIN")
     admin_cookie_secure: Optional[bool] = Field(default=None, env="ADMIN_COOKIE_SECURE")
     admin_legacy_bearer_enabled: bool = Field(
         default=False, env="ADMIN_LEGACY_BEARER_ENABLED"
@@ -54,6 +64,10 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    # Directory for on-disk log files (rotated), mounted as a Docker volume
+    # so logs survive container restarts/rebuilds and can be pulled off the
+    # server independently of `docker logs` (which is not persistent).
+    log_dir: str = Field(default="/app/logs", env="LOG_DIR")
 
     # Razorpay
     razorpay_key_id: str = Field(..., env="RAZORPAY_KEY_ID")
@@ -66,6 +80,34 @@ class Settings(BaseSettings):
     telegram_chat_id: Optional[str] = Field(default=None, env="TELEGRAM_CHAT_ID")
     telegram_product_base_url: str = Field(
         default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL"
+    )
+
+    # Shiprocket
+    shiprocket_enabled: bool = Field(default=False, env="SHIPROCKET_ENABLED")
+    shiprocket_email: Optional[str] = Field(default=None, env="SHIPROCKET_EMAIL")
+    shiprocket_password: Optional[str] = Field(default=None, env="SHIPROCKET_PASSWORD")
+    # Must exactly match a pickup location name already configured in the
+    # Shiprocket dashboard (Settings > Pickup Addresses) — required on every
+    # order-create call.
+    shiprocket_pickup_location: Optional[str] = Field(default=None, env="SHIPROCKET_PICKUP_LOCATION")
+    # The pincode of that SAME pickup location — the order-create call takes
+    # the location by name, but the courier-serviceability quote call needs
+    # the actual pickup postcode, so both are required.
+    shiprocket_pickup_pincode: Optional[str] = Field(default=None, env="SHIPROCKET_PICKUP_PINCODE")
+    # Shared secret Shiprocket sends back as the `x-api-key` header on every
+    # webhook call (configured in their dashboard under Settings > API >
+    # Webhooks). Not an HMAC signature — a static token compare.
+    shiprocket_webhook_token: Optional[str] = Field(default=None, env="SHIPROCKET_WEBHOOK_TOKEN")
+    # Fallback package dimensions/weight when product data doesn't have them
+    # (Product.weight_grams is frequently unset, and we don't collect
+    # per-order package dimensions at checkout).
+    shiprocket_default_weight_kg: float = Field(default=0.3, env="SHIPROCKET_DEFAULT_WEIGHT_KG")
+    shiprocket_default_length_cm: float = Field(default=15.0, env="SHIPROCKET_DEFAULT_LENGTH_CM")
+    shiprocket_default_breadth_cm: float = Field(default=10.0, env="SHIPROCKET_DEFAULT_BREADTH_CM")
+    shiprocket_default_height_cm: float = Field(default=5.0, env="SHIPROCKET_DEFAULT_HEIGHT_CM")
+    # Used only when the admin doesn't manually pick a courier on "Ready to Ship".
+    shiprocket_default_courier_selection: str = Field(
+        default="cheapest", env="SHIPROCKET_DEFAULT_COURIER_SELECTION"
     )
 
     # R2 / S3

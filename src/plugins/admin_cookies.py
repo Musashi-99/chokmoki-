@@ -15,6 +15,8 @@ def set_auth_cookies(response: Response, tokens: AuthTokens) -> None:
     secure = settings.cookie_secure
     samesite = settings.cookie_samesite
     domain = settings.admin_cookie_domain
+    # CSRF cookie needs its own (usually wider) domain — see config.py for why.
+    csrf_domain = settings.admin_csrf_cookie_domain or domain
 
     response.set_cookie(
         key=ACCESS_COOKIE,
@@ -43,16 +45,17 @@ def set_auth_cookies(response: Response, tokens: AuthTokens) -> None:
         secure=secure,
         samesite=samesite,
         max_age=settings.jwt_refresh_ttl_days * 24 * 60 * 60,
-        domain=domain,
+        domain=csrf_domain,
         path="/",
     )
 
 
 def clear_auth_cookies(response: Response) -> None:
     domain = settings.admin_cookie_domain
-    for key, path in (
-        (ACCESS_COOKIE, "/"),
-        (REFRESH_COOKIE, REFRESH_COOKIE_PATH),
-        (CSRF_COOKIE, "/"),
+    csrf_domain = settings.admin_csrf_cookie_domain or domain
+    for key, path, cookie_domain in (
+        (ACCESS_COOKIE, "/", domain),
+        (REFRESH_COOKIE, REFRESH_COOKIE_PATH, domain),
+        (CSRF_COOKIE, "/", csrf_domain),
     ):
-        response.delete_cookie(key=key, path=path, domain=domain)
+        response.delete_cookie(key=key, path=path, domain=cookie_domain)

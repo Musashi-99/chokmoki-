@@ -15,6 +15,8 @@ try:
     from src.cqrs.router import CQRSRouter
     from src.services.razorpay_service import RazorpayService
     from src.services.order_service import OrderService
+    from src.services.shiprocket_service import ShiprocketService
+    from src.shiprocket.client import ShiprocketAPIError, ShiprocketNotConfiguredError
     from src.services.telegram_service import TelegramService
     from src.alerts.consumer import AlertConsumer
     from src.plugins.logger import logger
@@ -79,6 +81,9 @@ except Exception as e:
     CQRSRouter = None
     RazorpayService = None
     OrderService = None
+    ShiprocketService = None
+    ShiprocketAPIError = None
+    ShiprocketNotConfiguredError = None
     TelegramService = None
     AlertConsumer = None
     logger = None

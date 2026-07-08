@@ -307,11 +307,11 @@ class OrderService:
             total=total
         )
     
-    async def create(self, order_data: OrderCreateInput) -> Order:
+    async def create(self, order_data: OrderCreateInput, ip: Optional[str] = None) -> Order:
         """Create order with validation and recalculation (for COD)"""
         if order_data.paymentMethod == "razorpay":
             raise ValueError("Use initiate_order for razorpay payments")
-        
+
         validated_items, pricing = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
@@ -320,6 +320,7 @@ class OrderService:
             email=order_data.userEmail,
             phone=order_data.shippingAddress.phone,
             endpoint="/api/orders",
+            ip=ip,
         )
         decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
         if decision.action == FraudAction.REJECT:
@@ -375,7 +376,7 @@ class OrderService:
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
 
-    async def create_from_admin(self, payload: dict) -> Order:
+    async def create_from_admin(self, payload: dict, ip: Optional[str] = None) -> Order:
         """Create an order from the admin dashboard (manual / phone orders)."""
         payload = self._normalize_admin_payload(payload)
         user_email = (payload.get("user_email") or "").strip()
@@ -467,9 +468,12 @@ class OrderService:
                 email=user_email,
                 phone=shipping_address.get("phone"),
                 endpoint="/api/admin/orders",
+                ip=ip,
             )
             decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=payload)
             raw_order_log["fraud_decision"] = decision.model_dump()
+            if decision.action == FraudAction.REJECT:
+                raise ValueError("Order rejected")
 
         shipping_address["email"] = shipping_address.get("email") or user_email
 
@@ -707,11 +711,13 @@ class OrderService:
         pricing = self._recalculate_pricing(validated_items)
         return validated_items, pricing
     
-    async def initiate_order(self, order_data: OrderCreateInput) -> OrderInitiateResponseDTO:
+    async def initiate_order(
+        self, order_data: OrderCreateInput, ip: Optional[str] = None
+    ) -> OrderInitiateResponseDTO:
         """Initiate order: validate, store in Redis, create Razorpay order"""
         if order_data.paymentMethod != "razorpay":
             raise ValueError("initiate_order only supports razorpay payment method")
-        
+
         validated_items, pricing = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
@@ -720,6 +726,7 @@ class OrderService:
             email=order_data.userEmail,
             phone=order_data.shippingAddress.phone,
             endpoint="/api/orders/initiate",
+            ip=ip,
         )
         decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
         if decision.action == FraudAction.REJECT:
