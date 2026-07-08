@@ -8,7 +8,7 @@ services:
     container_name: chokmoki-mongodb
     restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
       - mongodb_data:/data/db
     environment:
@@ -24,7 +24,7 @@ services:
     container_name: chokmoki-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -40,9 +40,18 @@ services:
     container_name: chokmoki-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/chokmoki
+      REDIS_URL: redis://redis:6379/0
+      REDIS_SOCKET_TIMEOUT: "10"
+      # Same compose file is used for prod and local (see header comment), so this must
+      # NOT hardcode a value: it defaults to production and only becomes "development"
+      # if the shell running `docker compose up` explicitly exports ENVIRONMENT=development.
+      # Prod deploys never set that var, so .env's ENVIRONMENT=production always wins there.
+      ENVIRONMENT: ${ENVIRONMENT:-production}
     volumes:
       - backend_logs:/app/logs
     depends_on:
