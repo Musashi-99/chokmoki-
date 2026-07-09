@@ -79,6 +79,8 @@ def parse_bundle_zip(raw: bytes) -> ParsedBundle:
 from bson import ObjectId
 from bson.errors import InvalidId
 
+from src.services.cache_service import cache
+
 
 @dataclass
 class ImportResult:
@@ -228,4 +230,6 @@ async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportRe
             result.sections_skipped.append(key)
             continue
         await _restore_section(key, value, database, result)
+
+    await cache.delete_pattern("chokmoki:*")
     return result

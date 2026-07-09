@@ -289,3 +289,17 @@ class TestRestoreBundleSections:
 
         assert result.sections_skipped == ["totally-unknown-section"]
         assert result.sections_restored == []
+
+
+class TestRestoreBundleCacheInvalidation:
+    @pytest.mark.asyncio
+    async def test_invalidates_cache_after_restore(self, monkeypatch):
+        from src.services import import_service
+
+        delete_pattern = AsyncMock()
+        monkeypatch.setattr(import_service.cache, "delete_pattern", delete_pattern)
+
+        parsed = ParsedBundle(sections={"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]})
+        await restore_bundle(parsed, _make_database(), AsyncMock())
+
+        delete_pattern.assert_awaited_once_with("chokmoki:*")
