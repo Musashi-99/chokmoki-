@@ -41,4 +41,5 @@ async def admin_import_bundle(
         "sections_skip_reasons": result.sections_skip_reasons,
         "assets_restored": result.assets_restored,
         "assets_failed": result.assets_failed,
+        "assets_deduplicated": result.assets_deduplicated,
     }

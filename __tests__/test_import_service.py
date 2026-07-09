@@ -386,3 +386,33 @@ class TestEnsureRestoreIndexes:
         await restore_bundle(parsed, _make_database(), AsyncMock())
 
         ensure_calls.assert_awaited_once()
+
+
+class TestAssetDeduplication:
+    @pytest.mark.asyncio
+    async def test_identical_asset_bytes_uploaded_only_once(self):
+        same_bytes = b"\xff\xd8\xff-identical-jpeg-bytes"
+        parsed = ParsedBundle(
+            sections={
+                "faq": [
+                    {"_id": "507f1f77bcf86cd799439011", "icon_url": "https://cdn.example.com/a.jpg"},
+                    {"_id": "507f1f77bcf86cd799439012", "icon_url": "https://cdn.example.com/b.jpg"},
+                ]
+            },
+            assets={
+                "assets/faq/001-a.jpg": same_bytes,
+                "assets/faq/002-b.jpg": same_bytes,
+            },
+            asset_urls={
+                "assets/faq/001-a.jpg": "https://cdn.example.com/a.jpg",
+                "assets/faq/002-b.jpg": "https://cdn.example.com/b.jpg",
+            },
+        )
+        r2 = AsyncMock()
+        r2.upload_file = AsyncMock(return_value="https://cdn.chokmoki.example/faq/shared.jpg")
+
+        result = await restore_bundle(parsed, _make_database(), r2)
+
+        r2.upload_file.assert_awaited_once()  # only one real upload for two identical files
+        assert result.assets_restored == 2  # both references still count as restored
+        assert result.assets_deduplicated == 1

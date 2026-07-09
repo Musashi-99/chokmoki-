@@ -4,6 +4,7 @@ aurum-editorial/src/lib/contentBundle.ts (exportAllContentBundle).
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import zipfile
@@ -89,6 +90,7 @@ class ImportResult:
     sections_skip_reasons: Dict[str, str] = field(default_factory=dict)
     assets_restored: int = 0
     assets_failed: int = 0
+    assets_deduplicated: int = 0
 
 
 def _asset_extension(zip_path: str) -> str:
@@ -97,14 +99,25 @@ def _asset_extension(zip_path: str) -> str:
     return zip_path.rsplit(".", 1)[-1].lower()
 
 
-async def _upload_assets(parsed: ParsedBundle, r2_service) -> tuple[Dict[str, str], int, int]:
-    """Upload every bundled asset to R2. Returns (old_url -> new_url map, restored, failed)."""
+async def _upload_assets(parsed: ParsedBundle, r2_service) -> tuple[Dict[str, str], int, int, int]:
+    """Upload every bundled asset to R2, deduplicating identical bytes within this
+    run by sha256 hash so a repeated restore of the same backup doesn't create
+    duplicate R2 objects. Returns (old_url -> new_url map, restored, failed, deduplicated).
+    """
     url_map: Dict[str, str] = {}
+    hash_to_new_url: Dict[str, str] = {}
     restored = 0
     failed = 0
+    deduplicated = 0
     for zip_path, old_url in parsed.asset_urls.items():
         data = parsed.assets.get(zip_path)
         if data is None:
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in hash_to_new_url:
+            url_map[old_url] = hash_to_new_url[digest]
+            restored += 1
+            deduplicated += 1
             continue
         ext = _asset_extension(zip_path)
         content_type = ASSET_CONTENT_TYPES.get(ext, "application/octet-stream")
@@ -113,9 +126,10 @@ async def _upload_assets(parsed: ParsedBundle, r2_service) -> tuple[Dict[str, st
         except Exception:
             failed += 1
             continue
+        hash_to_new_url[digest] = new_url
         url_map[old_url] = new_url
         restored += 1
-    return url_map, restored, failed
+    return url_map, restored, failed, deduplicated
 
 
 def _remap_urls(value: Any, url_map: Dict[str, str]) -> Any:
@@ -246,10 +260,14 @@ async def ensure_restore_indexes(database) -> None:
 
 
 async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportResult:
-    url_map, assets_restored, assets_failed = await _upload_assets(parsed, r2_service)
+    url_map, assets_restored, assets_failed, assets_deduplicated = await _upload_assets(parsed, r2_service)
     sections = _remap_urls(parsed.sections, url_map)
 
-    result = ImportResult(assets_restored=assets_restored, assets_failed=assets_failed)
+    result = ImportResult(
+        assets_restored=assets_restored,
+        assets_failed=assets_failed,
+        assets_deduplicated=assets_deduplicated,
+    )
 
     # Restore categories before products so product.categories FK references resolve.
     ordered_keys = sorted(sections.keys(), key=lambda k: 0 if k == "categories" else 1)
