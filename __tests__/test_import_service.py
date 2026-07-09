@@ -303,3 +303,31 @@ class TestRestoreBundleCacheInvalidation:
         await restore_bundle(parsed, _make_database(), AsyncMock())
 
         delete_pattern.assert_awaited_once_with("chokmoki:*")
+
+
+class TestSectionCoverageGuard:
+    def test_restore_handles_every_exported_section_key(self):
+        """Keep in sync with the 17 keys collected by `collectSections()` in
+        aurum-editorial/src/lib/contentBundle.ts:138-159. If this test fails after
+        adding/renaming a section there, add matching handling in
+        import_service._restore_section (and update EXPORTED_SECTION_KEYS below)
+        before merging — a section that exports but doesn't import is a silent
+        disaster-recovery hole.
+        """
+        from src.services.import_service import SIMPLE_LIST_SECTIONS, SINGLETON_SECTIONS
+
+        EXPORTED_SECTION_KEYS = {
+            "products", "categories", "hero", "site-assets", "collection-slides",
+            "testimonials", "faq", "policies", "studio-settings", "shop-page",
+            "home-page", "story-page", "journal", "navigation", "contact-page",
+            "history-page", "product-page",
+        }
+        assert len(EXPORTED_SECTION_KEYS) == 17
+
+        composite_sections = {"policies", "journal"}
+        handled = set(SIMPLE_LIST_SECTIONS.keys()) | set(SINGLETON_SECTIONS.keys()) | composite_sections
+
+        missing = EXPORTED_SECTION_KEYS - handled
+        extra = handled - EXPORTED_SECTION_KEYS
+        assert not missing, f"contentBundle.ts exports these sections but import_service can't restore them: {missing}"
+        assert not extra, f"import_service handles sections contentBundle.ts no longer exports: {extra}"
