@@ -38,6 +38,7 @@ async def admin_import_bundle(
     return {
         "sections_restored": result.sections_restored,
         "sections_skipped": result.sections_skipped,
+        "sections_skip_reasons": result.sections_skip_reasons,
         "assets_restored": result.assets_restored,
         "assets_failed": result.assets_failed,
     }

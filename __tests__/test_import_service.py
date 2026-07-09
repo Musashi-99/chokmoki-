@@ -331,3 +331,24 @@ class TestSectionCoverageGuard:
         extra = handled - EXPORTED_SECTION_KEYS
         assert not missing, f"contentBundle.ts exports these sections but import_service can't restore them: {missing}"
         assert not extra, f"import_service handles sections contentBundle.ts no longer exports: {extra}"
+
+
+class TestSkipReasonClassification:
+    @pytest.mark.asyncio
+    async def test_error_section_is_skipped_as_expected_not_a_warning(self):
+        parsed = ParsedBundle(sections={"faq": {"__error": "fetch failed"}})
+        result = await restore_bundle(parsed, _make_database(), AsyncMock())
+        assert result.sections_skipped == ["faq"]
+        assert result.sections_skip_reasons == {"faq": "source_error"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_section_is_skipped_as_a_warning(self):
+        parsed = ParsedBundle(sections={"totally-unknown-section": {"x": 1}})
+        result = await restore_bundle(parsed, _make_database(), AsyncMock())
+        assert result.sections_skip_reasons == {"totally-unknown-section": "unknown_section"}
+
+    @pytest.mark.asyncio
+    async def test_wrong_shape_section_is_skipped_as_a_warning(self):
+        parsed = ParsedBundle(sections={"faq": {"not": "a list"}})  # faq expects a list
+        result = await restore_bundle(parsed, _make_database(), AsyncMock())
+        assert result.sections_skip_reasons == {"faq": "invalid_shape"}

@@ -86,6 +86,7 @@ from src.services.cache_service import cache
 class ImportResult:
     sections_restored: List[str] = field(default_factory=list)
     sections_skipped: List[str] = field(default_factory=list)
+    sections_skip_reasons: Dict[str, str] = field(default_factory=dict)
     assets_restored: int = 0
     assets_failed: int = 0
 
@@ -179,6 +180,7 @@ async def _restore_section(key: str, value: Any, database, result: ImportResult)
     if key in SIMPLE_LIST_SECTIONS:
         if not isinstance(value, list):
             result.sections_skipped.append(key)
+            result.sections_skip_reasons[key] = "invalid_shape"
             return
         await _restore_list(database, SIMPLE_LIST_SECTIONS[key], value)
         result.sections_restored.append(key)
@@ -187,6 +189,7 @@ async def _restore_section(key: str, value: Any, database, result: ImportResult)
     if key in SINGLETON_SECTIONS:
         if not isinstance(value, dict):
             result.sections_skipped.append(key)
+            result.sections_skip_reasons[key] = "invalid_shape"
             return
         collection_name, key_field, key_value = SINGLETON_SECTIONS[key]
         await _restore_singleton(database, collection_name, key_field, key_value, value)
@@ -214,6 +217,7 @@ async def _restore_section(key: str, value: Any, database, result: ImportResult)
         return
 
     result.sections_skipped.append(key)
+    result.sections_skip_reasons[key] = "unknown_section"
 
 
 async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportResult:
@@ -228,6 +232,7 @@ async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportRe
         value = sections[key]
         if isinstance(value, dict) and "__error" in value:
             result.sections_skipped.append(key)
+            result.sections_skip_reasons[key] = "source_error"
             continue
         await _restore_section(key, value, database, result)
 
