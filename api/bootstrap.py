@@ -71,6 +71,12 @@ try:
     from src.models.product_page_settings import ProductPageSettingsUpdate
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
     from src.services.cache_service import cache
+    from src.services.import_service import (
+        BundleParseError,
+        MAX_BUNDLE_BYTES,
+        parse_bundle_zip,
+        restore_bundle,
+    )
     from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
     from src.security.client_ip import get_client_ip
     from src.plugins.metrics import render_metrics
@@ -103,6 +109,10 @@ except Exception as e:
     AdminRole = None
     AdminAuthService = None
     R2Service = None
+    BundleParseError = None
+    MAX_BUNDLE_BYTES = 500 * 1024 * 1024
+    parse_bundle_zip = None
+    restore_bundle = None
     TestimonialCreate = None
     HeroConfigCreate = None
     TestimonialService = None
