@@ -96,3 +96,196 @@ class TestParseBundleZip:
     def test_raises_bundle_parse_error_on_invalid_zip(self):
         with pytest.raises(BundleParseError, match="not a valid ZIP"):
             parse_bundle_zip(b"not a zip file at all")
+
+
+from src.services.import_service import restore_bundle, ParsedBundle  # noqa: E402
+
+
+def _make_database(collections: dict[str, AsyncMock] | None = None) -> MagicMock:
+    """Fake Motor database: db["name"] returns an AsyncMock collection."""
+    store: dict[str, AsyncMock] = collections or {}
+
+    def _getitem(name: str) -> AsyncMock:
+        if name not in store:
+            coll = AsyncMock()
+            coll.replace_one = AsyncMock()
+            store[name] = coll
+        return store[name]
+
+    database = MagicMock()
+    database.__getitem__.side_effect = _getitem
+    database._store = store
+    return database
+
+
+class TestRestoreBundleAssets:
+    @pytest.mark.asyncio
+    async def test_uploads_asset_and_remaps_url_in_section(self):
+        parsed = ParsedBundle(
+            sections={
+                "faq": [
+                    {
+                        "_id": "507f1f77bcf86cd799439011",
+                        "question": "Q1",
+                        "icon_url": "https://cdn.amplifycheckout.com/faq/photo.jpg",
+                    }
+                ]
+            },
+            assets={"assets/faq/001-photo.jpg": b"\xff\xd8\xff-fake-jpeg-bytes"},
+            asset_urls={"assets/faq/001-photo.jpg": "https://cdn.amplifycheckout.com/faq/photo.jpg"},
+        )
+        database = _make_database()
+        r2 = AsyncMock()
+        r2.upload_file = AsyncMock(return_value="https://cdn.chokmoki.example/faq/newname.jpg")
+
+        result = await restore_bundle(parsed, database, r2)
+
+        r2.upload_file.assert_awaited_once()
+        call_kwargs = r2.upload_file.await_args.kwargs
+        assert call_kwargs["extension"] == "jpg"
+        assert call_kwargs["content_type"] == "image/jpeg"
+
+        faq_collection = database["faq_items"]
+        written_doc = faq_collection.replace_one.await_args.args[1]
+        assert written_doc["icon_url"] == "https://cdn.chokmoki.example/faq/newname.jpg"
+        assert result.assets_restored == 1
+        assert result.assets_failed == 0
+
+    @pytest.mark.asyncio
+    async def test_asset_upload_failure_keeps_original_url_and_continues(self):
+        parsed = ParsedBundle(
+            sections={
+                "faq": [
+                    {
+                        "_id": "507f1f77bcf86cd799439011",
+                        "question": "Q1",
+                        "icon_url": "https://cdn.amplifycheckout.com/faq/photo.jpg",
+                    }
+                ]
+            },
+            assets={"assets/faq/001-photo.jpg": b"\xff\xd8\xff-fake-jpeg-bytes"},
+            asset_urls={"assets/faq/001-photo.jpg": "https://cdn.amplifycheckout.com/faq/photo.jpg"},
+        )
+        database = _make_database()
+        r2 = AsyncMock()
+        r2.upload_file = AsyncMock(side_effect=RuntimeError("R2 unreachable"))
+
+        result = await restore_bundle(parsed, database, r2)
+
+        written_doc = database["faq_items"].replace_one.await_args.args[1]
+        assert written_doc["icon_url"] == "https://cdn.amplifycheckout.com/faq/photo.jpg"
+        assert result.assets_restored == 0
+        assert result.assets_failed == 1
+
+
+from bson import ObjectId  # noqa: E402
+
+
+class TestRestoreBundleSections:
+    @pytest.mark.asyncio
+    async def test_restores_list_section_upserting_by_id(self):
+        parsed = ParsedBundle(sections={"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]})
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        coll = database["faq_items"]
+        coll.replace_one.assert_awaited_once()
+        filter_arg, doc_arg = coll.replace_one.await_args.args[:2]
+        assert filter_arg == {"_id": ObjectId("507f1f77bcf86cd799439011")}
+        assert doc_arg["question"] == "Q1"
+        assert "_id" not in doc_arg  # _id goes in the filter, not $set/replace body's duplicate key
+        assert coll.replace_one.await_args.kwargs["upsert"] is True
+        assert result.sections_restored == ["faq"]
+
+    @pytest.mark.asyncio
+    async def test_generates_new_id_when_missing_or_invalid(self):
+        parsed = ParsedBundle(sections={"faq": [{"question": "no id here"}]})
+        database = _make_database()
+
+        await restore_bundle(parsed, database, AsyncMock())
+
+        coll = database["faq_items"]
+        filter_arg = coll.replace_one.await_args.args[0]
+        assert isinstance(filter_arg["_id"], ObjectId)
+
+    @pytest.mark.asyncio
+    async def test_restores_singleton_section_by_settings_key(self):
+        parsed = ParsedBundle(sections={"studio-settings": {"email": "hi@chokmoki.com"}})
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        coll = database["studio_settings"]
+        filter_arg, doc_arg = coll.replace_one.await_args.args[:2]
+        assert filter_arg == {"settings_key": "main"}
+        assert doc_arg["settings_key"] == "main"
+        assert doc_arg["email"] == "hi@chokmoki.com"
+        assert result.sections_restored == ["studio-settings"]
+
+    @pytest.mark.asyncio
+    async def test_skips_error_sections(self):
+        parsed = ParsedBundle(sections={"faq": {"__error": "fetch failed"}})
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        assert result.sections_skipped == ["faq"]
+        assert result.sections_restored == []
+        database["faq_items"].replace_one.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restores_policies_section_into_two_collections(self):
+        parsed = ParsedBundle(
+            sections={
+                "policies": {
+                    "meta": {"page_title": "Policies"},
+                    "sections": [{"_id": "507f1f77bcf86cd799439011", "slug": "returns", "title": "Returns"}],
+                }
+            }
+        )
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        meta_filter, meta_doc = database["policy_page_meta"].replace_one.await_args.args[:2]
+        assert meta_filter == {"meta_key": "main"}
+        assert meta_doc["page_title"] == "Policies"
+
+        section_filter, section_doc = database["policy_sections"].replace_one.await_args.args[:2]
+        assert section_filter == {"_id": ObjectId("507f1f77bcf86cd799439011")}
+        assert section_doc["slug"] == "returns"
+        assert result.sections_restored == ["policies"]
+
+    @pytest.mark.asyncio
+    async def test_restores_journal_section_into_two_collections(self):
+        parsed = ParsedBundle(
+            sections={
+                "journal": {
+                    "meta": {"page_title": "Journal"},
+                    "data": [{"_id": "507f1f77bcf86cd799439011", "title": "Post 1"}],
+                }
+            }
+        )
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        meta_filter, meta_doc = database["journal_page_settings"].replace_one.await_args.args[:2]
+        assert meta_filter == {"settings_key": "main"}
+        assert meta_doc["page_title"] == "Journal"
+
+        post_filter, post_doc = database["blog_posts"].replace_one.await_args.args[:2]
+        assert post_filter == {"_id": ObjectId("507f1f77bcf86cd799439011")}
+        assert post_doc["title"] == "Post 1"
+        assert result.sections_restored == ["journal"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_section_key_is_skipped(self):
+        parsed = ParsedBundle(sections={"totally-unknown-section": {"x": 1}})
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        assert result.sections_skipped == ["totally-unknown-section"]
+        assert result.sections_restored == []
