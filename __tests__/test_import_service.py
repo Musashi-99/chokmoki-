@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import zipfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -109,6 +109,7 @@ def _make_database(collections: dict[str, AsyncMock] | None = None) -> MagicMock
         if name not in store:
             coll = AsyncMock()
             coll.replace_one = AsyncMock()
+            coll.create_index = AsyncMock()
             store[name] = coll
         return store[name]
 
@@ -352,3 +353,36 @@ class TestSkipReasonClassification:
         parsed = ParsedBundle(sections={"faq": {"not": "a list"}})  # faq expects a list
         result = await restore_bundle(parsed, _make_database(), AsyncMock())
         assert result.sections_skip_reasons == {"faq": "invalid_shape"}
+
+
+class TestEnsureRestoreIndexes:
+    @pytest.mark.asyncio
+    async def test_creates_unique_slug_index_on_products_and_categories(self):
+        from src.services.import_service import ensure_restore_indexes
+
+        database = _make_database()
+        await ensure_restore_indexes(database)
+
+        assert call("slug", unique=True) in database["products"].create_index.await_args_list
+        assert call("slug", unique=True) in database["categories"].create_index.await_args_list
+
+    @pytest.mark.asyncio
+    async def test_creates_settings_key_index_on_singleton_collections(self):
+        from src.services.import_service import ensure_restore_indexes
+
+        database = _make_database()
+        await ensure_restore_indexes(database)
+
+        assert call("settings_key", unique=True) in database["studio_settings"].create_index.await_args_list
+
+    @pytest.mark.asyncio
+    async def test_index_creation_is_called_at_end_of_restore_bundle(self, monkeypatch):
+        from src.services import import_service
+
+        ensure_calls = AsyncMock()
+        monkeypatch.setattr(import_service, "ensure_restore_indexes", ensure_calls)
+
+        parsed = ParsedBundle(sections={"faq": []})
+        await restore_bundle(parsed, _make_database(), AsyncMock())
+
+        ensure_calls.assert_awaited_once()

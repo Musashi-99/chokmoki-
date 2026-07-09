@@ -220,6 +220,31 @@ async def _restore_section(key: str, value: Any, database, result: ImportResult)
     result.sections_skip_reasons[key] = "unknown_section"
 
 
+# (collection_name, field, unique) — scoped to the 17 restore collections only.
+# Mirrors the lookup patterns the existing service layer relies on (slug lookups
+# for products/categories, settings_key/meta_key upserts for singletons).
+RESTORE_INDEXES: List[tuple[str, str, bool]] = [
+    ("products", "slug", True),
+    ("categories", "slug", True),
+    ("blog_posts", "slug", True),
+    ("studio_settings", "settings_key", True),
+    ("shop_page_settings", "settings_key", True),
+    ("home_page_settings", "settings_key", True),
+    ("story_page_settings", "settings_key", True),
+    ("navigation_settings", "settings_key", True),
+    ("contact_page_settings", "settings_key", True),
+    ("history_page_settings", "settings_key", True),
+    ("product_page_settings", "settings_key", True),
+    ("journal_page_settings", "settings_key", True),
+    ("policy_page_meta", "meta_key", True),
+]
+
+
+async def ensure_restore_indexes(database) -> None:
+    for collection_name, field_name, unique in RESTORE_INDEXES:
+        await database[collection_name].create_index(field_name, unique=unique)
+
+
 async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportResult:
     url_map, assets_restored, assets_failed = await _upload_assets(parsed, r2_service)
     sections = _remap_urls(parsed.sections, url_map)
@@ -237,4 +262,5 @@ async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportRe
         await _restore_section(key, value, database, result)
 
     await cache.delete_pattern("chokmoki:*")
+    await ensure_restore_indexes(database)
     return result
