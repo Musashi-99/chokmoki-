@@ -282,3 +282,57 @@ async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportRe
     await cache.delete_pattern("chokmoki:*")
     await ensure_restore_indexes(database)
     return result
+
+
+@dataclass
+class RestorePlan:
+    sections_to_restore: List[str] = field(default_factory=list)
+    sections_skipped: List[str] = field(default_factory=list)
+    sections_skip_reasons: Dict[str, str] = field(default_factory=dict)
+    assets_to_upload: int = 0
+    id_diff: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)  # section -> {"new": [...], "overwriting": [...]}
+
+
+async def plan_restore(parsed: ParsedBundle, database) -> RestorePlan:
+    plan = RestorePlan(assets_to_upload=len(parsed.assets))
+
+    for key, value in parsed.sections.items():
+        if isinstance(value, dict) and "__error" in value:
+            plan.sections_skipped.append(key)
+            plan.sections_skip_reasons[key] = "source_error"
+            continue
+        if key in SIMPLE_LIST_SECTIONS and isinstance(value, list):
+            plan.sections_to_restore.append(key)
+            await _diff_list_ids(database, SIMPLE_LIST_SECTIONS[key], key, value, plan)
+        elif key in SINGLETON_SECTIONS and isinstance(value, dict):
+            plan.sections_to_restore.append(key)
+        elif key == "policies" and isinstance(value, dict):
+            plan.sections_to_restore.append(key)
+            sections = value.get("sections")
+            if isinstance(sections, list):
+                await _diff_list_ids(database, "policy_sections", key, sections, plan)
+        elif key == "journal" and isinstance(value, dict):
+            plan.sections_to_restore.append(key)
+            posts = value.get("data")
+            if isinstance(posts, list):
+                await _diff_list_ids(database, "blog_posts", key, posts, plan)
+        else:
+            plan.sections_skipped.append(key)
+            plan.sections_skip_reasons[key] = "invalid_shape" if key in SIMPLE_LIST_SECTIONS or key in SINGLETON_SECTIONS else "unknown_section"
+
+    return plan
+
+
+async def _diff_list_ids(database, collection_name: str, section_key: str, items: List[Dict[str, Any]], plan: RestorePlan) -> None:
+    new_ids: List[str] = []
+    overwriting_ids: List[str] = []
+    collection = database[collection_name]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("_id")
+        oid = _object_id(raw_id) if raw_id else None
+        existing = await collection.find_one({"_id": oid}) if oid is not None else None
+        target = overwriting_ids if existing else new_ids
+        target.append(str(oid) if oid is not None else "(new)")
+    plan.id_diff[section_key] = {"new": new_ids, "overwriting": overwriting_ids}

@@ -124,3 +124,28 @@ class TestAdminImportRoute:
 
         assert response.status_code == 400
         assert "exceeds maximum size" in response.json()["detail"]
+
+    def test_dry_run_does_not_call_restore_bundle(self, api_module):
+        from api.bootstrap import require_admin
+
+        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        try:
+            with (
+                patch("api.routes.admin_import.restore_bundle", new_callable=AsyncMock) as mock_restore,
+                patch("api.routes.admin_import.plan_restore", new_callable=AsyncMock) as mock_plan,
+                patch("api.routes.admin_import.db.get_database", new_callable=AsyncMock) as mock_get_database,
+            ):
+                from src.services.import_service import RestorePlan
+
+                mock_get_database.return_value = object()
+                mock_plan.return_value = RestorePlan(sections_to_restore=["faq"], assets_to_upload=1)
+                client = TestClient(api_module.app, raise_server_exceptions=True)
+                files = {"bundle": ("backup.zip", _minimal_bundle_zip(), "application/zip")}
+                response = client.post("/api/admin/import?dry_run=true", files=files)
+        finally:
+            api_module.app.dependency_overrides.pop(require_admin, None)
+
+        assert response.status_code == 200
+        mock_restore.assert_not_called()
+        mock_plan.assert_awaited_once()
+        assert response.json()["sections_to_restore"] == ["faq"]

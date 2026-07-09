@@ -1,6 +1,9 @@
 """Admin restore-from-backup: accepts a content bundle ZIP and repopulates MongoDB + R2."""
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
-from api.bootstrap import db, R2Service, require_admin, logger, BundleParseError, parse_bundle_zip, restore_bundle, MAX_BUNDLE_BYTES
+from api.bootstrap import (
+    db, R2Service, require_admin, logger, BundleParseError,
+    parse_bundle_zip, restore_bundle, plan_restore, MAX_BUNDLE_BYTES,
+)
 
 router = APIRouter()
 
@@ -8,6 +11,7 @@ router = APIRouter()
 @router.post("/api/admin/import")
 async def admin_import_bundle(
     bundle: UploadFile = File(...),
+    dry_run: bool = False,
     email: str = Depends(require_admin),
 ):
     """Restore all site content + images from a previously exported backup ZIP."""
@@ -27,6 +31,18 @@ async def admin_import_bundle(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     database = await db.get_database()
+
+    if dry_run:
+        plan = await plan_restore(parsed, database)
+        return {
+            "dry_run": True,
+            "sections_to_restore": plan.sections_to_restore,
+            "sections_skipped": plan.sections_skipped,
+            "sections_skip_reasons": plan.sections_skip_reasons,
+            "assets_to_upload": plan.assets_to_upload,
+            "id_diff": plan.id_diff,
+        }
+
     r2 = R2Service()
     try:
         result = await restore_bundle(parsed, database, r2)

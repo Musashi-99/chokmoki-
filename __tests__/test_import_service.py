@@ -416,3 +416,45 @@ class TestAssetDeduplication:
         r2.upload_file.assert_awaited_once()  # only one real upload for two identical files
         assert result.assets_restored == 2  # both references still count as restored
         assert result.assets_deduplicated == 1
+
+
+class TestPlanRestore:
+    @pytest.mark.asyncio
+    async def test_reports_counts_without_writing_or_uploading(self):
+        from src.services.import_service import plan_restore
+
+        parsed = ParsedBundle(
+            sections={"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]},
+            assets={"assets/faq/001-photo.jpg": b"\xff\xd8\xff-bytes"},
+            asset_urls={"assets/faq/001-photo.jpg": "https://cdn.example.com/photo.jpg"},
+        )
+        database = _make_database()
+
+        plan = await plan_restore(parsed, database)
+
+        database["faq_items"].replace_one.assert_not_awaited()
+        assert plan.sections_to_restore == ["faq"]
+        assert plan.sections_skipped == []
+        assert plan.assets_to_upload == 1
+
+    @pytest.mark.asyncio
+    async def test_reports_new_vs_existing_ids_per_list_section(self):
+        from src.services.import_service import plan_restore
+
+        parsed = ParsedBundle(
+            sections={
+                "faq": [
+                    {"_id": "507f1f77bcf86cd799439011", "question": "existing"},
+                    {"_id": "507f1f77bcf86cd799439099", "question": "new"},
+                ]
+            }
+        )
+        database = _make_database()
+        database["faq_items"].find_one = AsyncMock(
+            side_effect=lambda f: {"_id": f["_id"]} if str(f["_id"]) == "507f1f77bcf86cd799439011" else None
+        )
+
+        plan = await plan_restore(parsed, database)
+
+        assert plan.id_diff["faq"]["new"] == ["507f1f77bcf86cd799439099"]
+        assert plan.id_diff["faq"]["overwriting"] == ["507f1f77bcf86cd799439011"]

@@ -76,6 +76,7 @@ try:
         MAX_BUNDLE_BYTES,
         parse_bundle_zip,
         restore_bundle,
+        plan_restore,
     )
     from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
     from src.security.client_ip import get_client_ip
@@ -113,6 +114,7 @@ except Exception as e:
     MAX_BUNDLE_BYTES = 500 * 1024 * 1024
     parse_bundle_zip = None
     restore_bundle = None
+    plan_restore = None
     TestimonialCreate = None
     HeroConfigCreate = None
     TestimonialService = None
