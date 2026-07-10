@@ -78,6 +78,7 @@ try:
         restore_bundle,
         plan_restore,
     )
+    from src.services.order_backup_service import export_orders_backup
     from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
     from src.security.client_ip import get_client_ip
     from src.plugins.metrics import render_metrics
@@ -115,6 +116,7 @@ except Exception as e:
     parse_bundle_zip = None
     restore_bundle = None
     plan_restore = None
+    export_orders_backup = None
     TestimonialCreate = None
     HeroConfigCreate = None
     TestimonialService = None

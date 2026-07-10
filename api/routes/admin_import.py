@@ -1,4 +1,6 @@
-"""Admin restore-from-backup: accepts a content bundle ZIP and repopulates MongoDB + R2."""
+"""Admin restore-from-backup: accepts a full backend bundle ZIP (17 config
+sections + orders/ + order_logs/) and repopulates MongoDB + R2. Orders/
+order_logs are upserted by order_id, never wiped or replaced."""
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from api.bootstrap import (
     db, R2Service, require_admin, logger, BundleParseError,
@@ -41,6 +43,8 @@ async def admin_import_bundle(
             "sections_skip_reasons": plan.sections_skip_reasons,
             "assets_to_upload": plan.assets_to_upload,
             "id_diff": plan.id_diff,
+            "orders_to_restore": plan.orders_to_restore,
+            "order_logs_to_restore": plan.order_logs_to_restore,
         }
 
     r2 = R2Service()
@@ -58,4 +62,8 @@ async def admin_import_bundle(
         "assets_restored": result.assets_restored,
         "assets_failed": result.assets_failed,
         "assets_deduplicated": result.assets_deduplicated,
+        "orders_restored": result.orders_restored,
+        "orders_skipped": result.orders_skipped,
+        "order_logs_restored": result.order_logs_restored,
+        "order_logs_skipped": result.order_logs_skipped,
     }

@@ -525,3 +525,139 @@ class TestPlanRestore:
 
         assert plan.id_diff["faq"]["new"] == ["507f1f77bcf86cd799439099"]
         assert plan.id_diff["faq"]["overwriting"] == ["507f1f77bcf86cd799439011"]
+
+
+class TestParseBundleZipOrders:
+    """orders/orders.json + orders/order_logs.json live in the same ZIP as
+    products/ and sections/ — one export, one manifest, one restore path."""
+
+    def _zip_with_orders(self, orders=None, order_logs=None, include_orders_files=True):
+        raw = _build_zip(
+            sections={"faq": []},
+            manifest_rows=[{"path": "sections/faq/content.json", "entity": "faq", "status": "ok", "bytes": 10}],
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zout:
+                for item in zin.infolist():
+                    zout.writestr(item.filename, zin.read(item.filename))
+                if include_orders_files:
+                    zout.writestr("orders/orders.json", json.dumps(orders if orders is not None else []))
+                    zout.writestr("orders/order_logs.json", json.dumps(order_logs if order_logs is not None else []))
+        return buf.getvalue()
+
+    def test_extracts_orders_and_order_logs(self):
+        raw = self._zip_with_orders(
+            orders=[{"order_id": "ORD-1", "status": "paid", "created_at": "2026-07-01T00:00:00Z"}],
+            order_logs=[{"order_id": "ORD-1", "event": "created"}],
+        )
+        parsed = parse_bundle_zip(raw)
+        assert len(parsed.orders) == 1
+        assert parsed.orders[0]["order_id"] == "ORD-1"
+        assert len(parsed.order_logs) == 1
+        assert parsed.order_logs[0]["order_id"] == "ORD-1"
+
+    def test_inflates_iso_datetimes_in_orders(self):
+        import datetime
+
+        raw = self._zip_with_orders(orders=[{"order_id": "ORD-1", "created_at": "2026-07-01T12:30:00Z"}])
+        parsed = parse_bundle_zip(raw)
+        assert isinstance(parsed.orders[0]["created_at"], datetime.datetime)
+
+    def test_missing_orders_files_yields_empty_lists(self):
+        raw = self._zip_with_orders(include_orders_files=False)
+        parsed = parse_bundle_zip(raw)
+        assert parsed.orders == []
+        assert parsed.order_logs == []
+
+    def test_raises_on_malformed_orders_json(self):
+        raw = _build_zip(
+            sections={"faq": []},
+            manifest_rows=[{"path": "sections/faq/content.json", "entity": "faq", "status": "ok", "bytes": 10}],
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zout:
+                for item in zin.infolist():
+                    zout.writestr(item.filename, zin.read(item.filename))
+                zout.writestr("orders/orders.json", "not json")
+        with pytest.raises(BundleParseError, match="orders/orders.json"):
+            parse_bundle_zip(buf.getvalue())
+
+    def test_raises_when_orders_json_is_not_a_list(self):
+        raw = _build_zip(
+            sections={"faq": []},
+            manifest_rows=[{"path": "sections/faq/content.json", "entity": "faq", "status": "ok", "bytes": 10}],
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zout:
+                for item in zin.infolist():
+                    zout.writestr(item.filename, zin.read(item.filename))
+                zout.writestr("orders/orders.json", json.dumps({"not": "a list"}))
+        with pytest.raises(BundleParseError, match="must be a JSON array"):
+            parse_bundle_zip(buf.getvalue())
+
+
+class TestRestoreBundleOrders:
+    @pytest.mark.asyncio
+    async def test_restores_orders_and_order_logs_by_order_id_upsert(self):
+        parsed = ParsedBundle(
+            sections={},
+            orders=[{"order_id": "ORD-1", "status": "paid"}],
+            order_logs=[{"order_id": "ORD-1", "event": "created"}],
+        )
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        orders_coll = database["orders"]
+        orders_coll.replace_one.assert_awaited_once()
+        filter_arg = orders_coll.replace_one.await_args.args[0]
+        assert filter_arg == {"order_id": "ORD-1"}
+        assert orders_coll.replace_one.await_args.kwargs["upsert"] is True
+
+        logs_coll = database["order_logs"]
+        logs_coll.replace_one.assert_awaited_once()
+        assert result.orders_restored == 1
+        assert result.order_logs_restored == 1
+
+    @pytest.mark.asyncio
+    async def test_orders_without_order_id_are_skipped(self):
+        parsed = ParsedBundle(sections={}, orders=[{"status": "paid"}], order_logs=[])
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        assert result.orders_restored == 0
+        assert result.orders_skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_orders_does_not_touch_orders_collections(self):
+        parsed = ParsedBundle(sections={"faq": []})
+        database = _make_database()
+
+        result = await restore_bundle(parsed, database, AsyncMock())
+
+        assert "orders" not in database._store
+        assert "order_logs" not in database._store
+        assert result.orders_restored == 0
+        assert result.order_logs_restored == 0
+
+
+class TestPlanRestoreOrders:
+    @pytest.mark.asyncio
+    async def test_reports_orders_to_restore_counts(self):
+        from src.services.import_service import plan_restore
+
+        parsed = ParsedBundle(
+            sections={},
+            orders=[{"order_id": "ORD-1"}, {"order_id": "ORD-2"}],
+            order_logs=[{"order_id": "ORD-1", "event": "created"}],
+        )
+        database = _make_database()
+
+        plan = await plan_restore(parsed, database)
+
+        assert plan.orders_to_restore == 2
+        assert plan.order_logs_to_restore == 1
