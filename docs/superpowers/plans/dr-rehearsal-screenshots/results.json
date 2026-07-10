@@ -1,0 +1,59 @@
+[
+  {
+    "name": "home",
+    "url": "http://localhost:5174/",
+    "navError": null,
+    "consoleErrors": [],
+    "failedRequests": [
+      {
+        "url": "http://localhost:9002/dr-rehearsal-sandbox/src/assets/curated-edit-veil.webp",
+        "failure": "net::ERR_BLOCKED_BY_ORB"
+      },
+      {
+        "url": "http://localhost:9002/dr-rehearsal-sandbox/src/assets/curated-edit-veil.webp",
+        "failure": "net::ERR_BLOCKED_BY_ORB"
+      },
+      {
+        "url": "http://localhost:9002/dr-rehearsal-sandbox/src/assets/curated-edit-veil.webp",
+        "failure": "net::ERR_BLOCKED_BY_ORB"
+      },
+      {
+        "url": "http://localhost:9002/dr-rehearsal-sandbox/src/assets/gift-intention.webp",
+        "failure": "net::ERR_BLOCKED_BY_ORB"
+      },
+      {
+        "url": "http://localhost:9002/dr-rehearsal-sandbox/src/assets/everyday-radiance.webp",
+        "failure": "net::ERR_BLOCKED_BY_ORB"
+      }
+    ],
+    "brokenImgs": [],
+    "hasFaq": true
+  },
+  {
+    "name": "product-detail",
+    "url": "http://localhost:5174/product/ganges-pearl-drop",
+    "navError": null,
+    "consoleErrors": [],
+    "failedRequests": [],
+    "brokenImgs": [],
+    "hasFaq": true
+  },
+  {
+    "name": "policy",
+    "url": "http://localhost:5174/policy",
+    "navError": null,
+    "consoleErrors": [],
+    "failedRequests": [],
+    "brokenImgs": [],
+    "hasFaq": false
+  },
+  {
+    "name": "blog-journal",
+    "url": "http://localhost:5174/blog",
+    "navError": null,
+    "consoleErrors": [],
+    "failedRequests": [],
+    "brokenImgs": [],
+    "hasFaq": false
+  }
+]

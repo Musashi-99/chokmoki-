@@ -1,0 +1,84 @@
+# Disposable DR-rehearsal sandbox. Fully separate project/network/volumes/ports
+# from the real chokmoki-* stack (docker-compose.yml) — safe to `down -v` freely.
+# Usage: docker compose -p chokmoki-dr -f docker-compose.sandbox.yml up -d --build
+name: chokmoki-dr
+services:
+  mongodb:
+    image: mongo:7
+    container_name: chokmoki-dr-mongodb
+    restart: unless-stopped
+    ports:
+      - "27019:27017"
+    volumes:
+      - dr_mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: chokmoki_dr
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: chokmoki-dr-redis
+    restart: unless-stopped
+    ports:
+      - "6381:6379"
+    volumes:
+      - dr_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: chokmoki-dr-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - dr_minio_data:/data
+    environment:
+      MINIO_ROOT_USER: dr-sandbox-key
+      MINIO_ROOT_PASSWORD: dr-sandbox-secret
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chokmoki-dr-backend
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env.sandbox
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/chokmoki_dr
+      REDIS_URL: redis://redis:6379/0
+      REDIS_SOCKET_TIMEOUT: "10"
+      R2_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - dr_backend_logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  dr_mongodb_data:
+  dr_redis_data:
+  dr_minio_data:
+  dr_backend_logs:

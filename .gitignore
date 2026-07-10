@@ -3,6 +3,7 @@ __pycache__/
 .env.server
 .env.*.local
 .env.docker
+.env.sandbox
 .DS_Store
 .venv/
 .vscode/
@@ -25,3 +26,4 @@ venv/
 .mypy_cache/
 .venv
 .worktrees/
+.gstack/

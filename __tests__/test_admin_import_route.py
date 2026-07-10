@@ -39,8 +39,12 @@ def _minimal_bundle_zip() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
         zf.writestr(
-            "content.json",
-            '{"exported_at": "2026-07-09T00:00:00Z", "generator": "test", "sections": {"faq": []}}',
+            "sections/faq/content.json",
+            '{"exported_at": "2026-07-09T00:00:00Z", "generator": "test", "faq": []}',
+        )
+        zf.writestr(
+            "manifest.csv",
+            "Path in ZIP,Entity,Field,Original Source URL,Status,Bytes\n",
         )
     return buf.getvalue()
 
