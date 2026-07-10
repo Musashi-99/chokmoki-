@@ -22,43 +22,103 @@ def _build_zip(
     sections: dict,
     assets: dict[str, bytes] | None = None,
     manifest_rows: list[dict] | None = None,
-    include_content_json: bool = True,
+    section_key: str | None = None,
 ) -> bytes:
+    """Build a ZIP in the new entity-based format.
+
+    *sections* is a flat dict (section_key -> value). Products are stored
+    under a single ``products`` key (their individual content.json files
+    are combined into one array).
+
+    If *section_key* is given, the sections dict's single key is written
+    as a per-entity content.json at ``sections/{section_key}/content.json``.
+    Otherwise the full sections dict is split into ``sections/*/content.json``
+    (one per non-product key) plus ``products/*/content.json`` for products.
+    """
+    if assets is None:
+        assets = {}
+    if manifest_rows is None:
+        manifest_rows = []
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-        if include_content_json:
-            zf.writestr(
-                "content.json",
-                json.dumps({"exported_at": "2026-07-09T00:00:00Z", "generator": "test", "sections": sections}),
-            )
-        for path, data in (assets or {}).items():
+        # Write per-entity content.json files.
+        if section_key:
+            # Single entity
+            key = section_key
+            value = sections[key]
+            payload = {"exported_at": "2026-07-09T00:00:00Z", "generator": "test", key: value}
+            if key == "products":
+                # Build individual product files
+                for i, product in enumerate(value if isinstance(value, list) else [value]):
+                    slug = product.get("slug") if isinstance(product, dict) else f"product-{i}"
+                    zf.writestr(
+                        f"products/{slug}/content.json",
+                        json.dumps({"exported_at": "2026-07-09T00:00:00Z", "generator": "test", "products": product}),
+                    )
+            else:
+                zf.writestr(f"sections/{key}/content.json", json.dumps(payload))
+        else:
+            # Multiple entities: build per-key content.json files
+            for key, value in sections.items():
+                payload = {"exported_at": "2026-07-09T00:00:00Z", "generator": "test", key: value}
+                if key == "products":
+                    product_list = value if isinstance(value, list) else []
+                    for i, product in enumerate(product_list):
+                        slug = product.get("slug") if isinstance(product, dict) else f"product-{i}"
+                        zf.writestr(
+                            f"products/{slug}/content.json",
+                            json.dumps({
+                                "exported_at": "2026-07-09T00:00:00Z",
+                                "generator": "test",
+                                "products": product,
+                            }),
+                        )
+                else:
+                    zf.writestr(f"sections/{key}/content.json", json.dumps(payload))
+
+        # Write assets
+        for path, data in assets.items():
             zf.writestr(path, data)
-        if manifest_rows is not None:
-            csv_buf = io.StringIO()
-            writer = csv.writer(csv_buf)
-            writer.writerow(["File", "Section", "Field (where filled)", "Source URL", "Status", "Bytes"])
-            for row in manifest_rows:
-                writer.writerow(
-                    [row["file"], row["section"], row["field"], row["url"], row["status"], row.get("bytes", 0)]
-                )
-            zf.writestr("assets-manifest.csv", csv_buf.getvalue())
+
+        # Write manifest.csv (new format columns)
+        csv_buf = io.StringIO()
+        writer = csv.writer(csv_buf)
+        writer.writerow(["Path in ZIP", "Entity", "Field", "Original Source URL", "Status", "Bytes"])
+        for row in manifest_rows:
+            writer.writerow([
+                row.get("path", row.get("file", "")),
+                row.get("entity", row.get("section", "")),
+                row.get("field", ""),
+                row.get("url", ""),
+                row.get("status", ""),
+                row.get("bytes", 0),
+            ])
+        zf.writestr("manifest.csv", csv_buf.getvalue())
     return buf.getvalue()
 
 
 class TestParseBundleZip:
     def test_extracts_sections_from_content_json(self):
-        raw = _build_zip(sections={"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]})
+        raw = _build_zip(
+            sections={"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]},
+            manifest_rows=[{
+                "path": "sections/faq/content.json",
+                "entity": "faq", "field": "", "url": "",
+                "status": "ok", "bytes": 50,
+            }],
+        )
         parsed = parse_bundle_zip(raw)
         assert parsed.sections == {"faq": [{"_id": "507f1f77bcf86cd799439011", "question": "Q1"}]}
 
     def test_extracts_downloaded_assets_and_source_urls(self):
         raw = _build_zip(
             sections={"faq": []},
-            assets={"assets/faq/001-photo.jpg": b"\xff\xd8\xff-fake-jpeg-bytes"},
+            assets={"sections/faq/images/icon_url.jpg": b"\xff\xd8\xff-fake-jpeg-bytes"},
             manifest_rows=[
                 {
-                    "file": "assets/faq/001-photo.jpg",
-                    "section": "faq",
+                    "path": "sections/faq/images/icon_url.jpg",
+                    "entity": "faq",
                     "field": "icon_url",
                     "url": "https://cdn.amplifycheckout.com/faq/photo.jpg",
                     "status": "downloaded",
@@ -67,8 +127,8 @@ class TestParseBundleZip:
             ],
         )
         parsed = parse_bundle_zip(raw)
-        assert parsed.assets["assets/faq/001-photo.jpg"] == b"\xff\xd8\xff-fake-jpeg-bytes"
-        assert parsed.asset_urls["assets/faq/001-photo.jpg"] == "https://cdn.amplifycheckout.com/faq/photo.jpg"
+        assert parsed.assets["sections/faq/images/icon_url.jpg"] == b"\xff\xd8\xff-fake-jpeg-bytes"
+        assert parsed.asset_urls["sections/faq/images/icon_url.jpg"] == "https://cdn.amplifycheckout.com/faq/photo.jpg"
 
     def test_skips_failed_manifest_rows(self):
         raw = _build_zip(
@@ -76,8 +136,8 @@ class TestParseBundleZip:
             assets={},
             manifest_rows=[
                 {
-                    "file": "assets/faq/002-missing.jpg",
-                    "section": "faq",
+                    "path": "sections/faq/images/missing.jpg",
+                    "entity": "faq",
                     "field": "icon_url",
                     "url": "https://cdn.amplifycheckout.com/faq/missing.jpg",
                     "status": "failed: 404",
@@ -86,12 +146,19 @@ class TestParseBundleZip:
             ],
         )
         parsed = parse_bundle_zip(raw)
-        assert "assets/faq/002-missing.jpg" not in parsed.asset_urls
+        assert "sections/faq/images/missing.jpg" not in parsed.asset_urls
 
-    def test_raises_bundle_parse_error_without_content_json(self):
-        raw = _build_zip(sections={}, include_content_json=False)
-        with pytest.raises(BundleParseError, match="content.json"):
-            parse_bundle_zip(raw)
+    def test_raises_bundle_parse_error_without_manifest(self):
+        raw = _build_zip(sections={"faq": []})
+        # Remove manifest.csv to simulate missing manifest
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw), "r") as zin:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zout:
+                for item in zin.infolist():
+                    if item.filename != "manifest.csv":
+                        zout.writestr(item.filename, zin.read(item.filename))
+        with pytest.raises(BundleParseError, match="manifest.csv"):
+            parse_bundle_zip(buf.getvalue())
 
     def test_raises_bundle_parse_error_on_invalid_zip(self):
         with pytest.raises(BundleParseError, match="not a valid ZIP"):

@@ -40,6 +40,37 @@ class ParsedBundle:
     asset_urls: Dict[str, str] = field(default_factory=dict)  # zip path -> original source URL
 
 
+def _replace_relative_paths(
+    value: Any,
+    base_path: str,
+    manifest: Dict[str, Dict[str, str]],
+) -> Any:
+    """Replace relative image paths (e.g. 'images/thumbnail.jpg') with the
+    original source URL from manifest.csv.  base_path is the entity's
+    folder path inside the ZIP (e.g. 'products/ganges-pearl-drop')."""
+    if isinstance(value, str) and value.startswith("images/"):
+        full_zip_path = f"{base_path}/{value}"
+        row = manifest.get(full_zip_path, {})
+        original_url = row.get("Original Source URL", "")
+        if original_url:
+            return original_url
+        return value
+    if isinstance(value, list):
+        return [_replace_relative_paths(v, base_path, manifest) for v in value]
+    if isinstance(value, dict):
+        return {k: _replace_relative_paths(v, base_path, manifest) for k, v in value.items()}
+    return value
+
+
+def _section_key_from_json(content: dict) -> str | None:
+    """Extract the section key from a per-entity content.json (the first key
+    that is not 'exported_at' or 'generator')."""
+    for k in content:
+        if k not in ("exported_at", "generator"):
+            return k
+    return None
+
+
 def parse_bundle_zip(raw: bytes) -> ParsedBundle:
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
@@ -47,32 +78,60 @@ def parse_bundle_zip(raw: bytes) -> ParsedBundle:
         raise BundleParseError("Uploaded file is not a valid ZIP archive") from e
 
     names = set(zf.namelist())
-    if "content.json" not in names:
-        raise BundleParseError("Bundle is missing content.json")
 
-    try:
-        content = json.loads(zf.read("content.json").decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise BundleParseError("content.json is not valid JSON") from e
+    # Manifest is required.
+    if "manifest.csv" not in names:
+        raise BundleParseError("Bundle is missing manifest.csv")
 
-    sections = content.get("sections")
-    if not isinstance(sections, dict):
-        raise BundleParseError("content.json has no 'sections' object")
+    # Read manifest: zip_path -> row
+    manifest_text = zf.read("manifest.csv").decode("utf-8-sig")
+    manifest: Dict[str, Dict[str, str]] = {}
+    for row in csv.DictReader(io.StringIO(manifest_text)):
+        manifest[row["Path in ZIP"]] = row
 
+    sections: Dict[str, Any] = {}
     asset_urls: Dict[str, str] = {}
-    if "assets-manifest.csv" in names:
-        manifest_text = zf.read("assets-manifest.csv").decode("utf-8-sig")
-        for row in csv.DictReader(io.StringIO(manifest_text)):
-            if row.get("Status") == "downloaded":
-                file_path = row.get("File", "")
-                url = row.get("Source URL", "")
-                if file_path and url:
-                    asset_urls[file_path] = url
-
     assets: Dict[str, bytes] = {}
-    for path in asset_urls:
-        if path in names:
-            assets[path] = zf.read(path)
+    products: list[Any] = []
+
+    for name in names:
+        if not name.endswith("/content.json"):
+            # Collect images from manifest
+            if "/images/" in name:
+                row = manifest.get(name, {})
+                if row.get("Status") == "downloaded":
+                    url = row.get("Original Source URL", "")
+                    if url:
+                        asset_urls[name] = url
+                        try:
+                            assets[name] = zf.read(name)
+                        except KeyError:
+                            pass
+            continue
+
+        dir_path = name.rsplit("/", 1)[0]  # e.g. "products/foo" or "sections/hero"
+
+        try:
+            content = json.loads(zf.read(name).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+
+        section_key = _section_key_from_json(content)
+        if section_key is None:
+            continue
+
+        value = content[section_key]
+
+        # Inflate relative image paths back to original URLs.
+        value = _replace_relative_paths(value, dir_path, manifest)
+
+        if name.startswith("products/"):
+            products.append(value)
+        elif name.startswith("sections/"):
+            sections[section_key] = value
+
+    if products:
+        sections["products"] = products
 
     return ParsedBundle(sections=sections, assets=assets, asset_urls=asset_urls)
 
