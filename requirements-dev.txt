@@ -1,0 +1,4 @@
+bandit==1.8.3
+pip-audit==2.9.0
+semgrep==1.128.0
+cyclonedx-bom==6.0.0

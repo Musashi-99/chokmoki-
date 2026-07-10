@@ -23,6 +23,38 @@ from src.security.idempotency import (
 router = APIRouter()
 
 
+@router.post("/api/orders/lookup")
+async def api_lookup_orders(payload: Dict[str, Any]):
+    """Public 'My Orders' lookup — returns a customer's own orders.
+
+    Requires both email and phone (as entered at checkout) to match, so
+    knowing someone's email alone isn't enough to see their order history.
+    """
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    email = str(payload.get("email") or "").strip()
+    phone = str(payload.get("phone") or "").strip()
+    if not email or not phone:
+        raise HTTPException(status_code=400, detail="Email and phone are required")
+
+    service = OrderService()
+    try:
+        orders = await service.list_for_customer(email=email, phone=phone)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if logger:
+            logger.error(f"Order lookup failed: {e}")
+        raise HTTPException(status_code=500) from e
+
+    body = json.loads(json.dumps(
+        [o.model_dump(by_alias=True) for o in orders],
+        cls=JSONEncoder,
+    ))
+    return JSONResponse(content={"data": body})
+
+
 @router.post("/api/orders")
 async def api_create_order(request: Request, payload: Dict[str, Any]):
     """Create a new order (public endpoint)."""

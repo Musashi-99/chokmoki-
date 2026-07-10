@@ -568,6 +568,34 @@ class OrderService:
 
         return orders
 
+    async def list_for_customer(self, email: str, phone: str, limit: int = 50) -> List[Order]:
+        """Look up a customer's own orders by email + phone (both required).
+
+        Requiring both fields together — not email alone — keeps this public,
+        unauthenticated endpoint from turning into an order-history leak for
+        anyone who just knows a customer's email address.
+        """
+        email = coerce_safe_string(email, "email").strip().lower()
+        phone = coerce_safe_string(phone, "phone").strip()
+        if not email or not phone:
+            return []
+
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        query = {
+            "user_email": {"$regex": f"^{escape_mongo_regex(email)}$", "$options": "i"},
+            "shipping_address.phone": phone,
+        }
+        cursor = collection.find(query).sort("created_at", -1).limit(limit)
+        orders_dict = await cursor.to_list(length=limit)
+
+        orders = []
+        for order_dict in orders_dict:
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+            orders.append(Order(**order_dict))
+        return orders
+
     async def count(
         self,
         user_email: Optional[str] = None,
