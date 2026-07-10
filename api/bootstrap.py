@@ -78,14 +78,7 @@ try:
         restore_bundle,
         plan_restore,
     )
-    from src.services.order_backup_service import (
-        OrdersBackupParseError,
-        MAX_ORDERS_BACKUP_BYTES,
-        export_orders_backup,
-        parse_orders_backup,
-        plan_orders_restore,
-        restore_orders_backup,
-    )
+    from src.services.order_backup_service import export_orders_backup
     from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
     from src.security.client_ip import get_client_ip
     from src.plugins.metrics import render_metrics
@@ -123,12 +116,7 @@ except Exception as e:
     parse_bundle_zip = None
     restore_bundle = None
     plan_restore = None
-    OrdersBackupParseError = None
-    MAX_ORDERS_BACKUP_BYTES = 200 * 1024 * 1024
     export_orders_backup = None
-    parse_orders_backup = None
-    plan_orders_restore = None
-    restore_orders_backup = None
     TestimonialCreate = None
     HeroConfigCreate = None
     TestimonialService = None

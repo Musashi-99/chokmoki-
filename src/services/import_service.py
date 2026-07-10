@@ -1,5 +1,10 @@
 """Parse and restore a site-content backup ZIP produced by
 aurum-editorial/src/lib/contentBundle.ts (exportAllContentBundle).
+
+The ZIP also carries an orders/ folder (orders.json + order_logs.json, plain
+JSON arrays) alongside products/ and sections/ — one export, one ZIP, one
+restore endpoint for the whole backend. Orders/order_logs are restored via
+order_backup_service's upsert-by-order_id logic, never wiped or replaced.
 """
 from __future__ import annotations
 
@@ -38,6 +43,8 @@ class ParsedBundle:
     sections: Dict[str, Any] = field(default_factory=dict)
     assets: Dict[str, bytes] = field(default_factory=dict)
     asset_urls: Dict[str, str] = field(default_factory=dict)  # zip path -> original source URL
+    orders: List[Dict[str, Any]] = field(default_factory=list)
+    order_logs: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _replace_relative_paths(
@@ -93,8 +100,30 @@ def parse_bundle_zip(raw: bytes) -> ParsedBundle:
     asset_urls: Dict[str, str] = {}
     assets: Dict[str, bytes] = {}
     products: list[Any] = []
+    orders: list[Any] = []
+    order_logs: list[Any] = []
 
     for name in names:
+        if name == "orders/orders.json":
+            try:
+                parsed_orders = json.loads(zf.read(name).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise BundleParseError("orders/orders.json is not valid JSON") from e
+            if not isinstance(parsed_orders, list):
+                raise BundleParseError("orders/orders.json must be a JSON array")
+            orders = [_inflate_order_datetimes(o) for o in parsed_orders]
+            continue
+
+        if name == "orders/order_logs.json":
+            try:
+                parsed_logs = json.loads(zf.read(name).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise BundleParseError("orders/order_logs.json is not valid JSON") from e
+            if not isinstance(parsed_logs, list):
+                raise BundleParseError("orders/order_logs.json must be a JSON array")
+            order_logs = [_inflate_order_datetimes(o) for o in parsed_logs]
+            continue
+
         if not name.endswith("/content.json"):
             # Collect images from manifest
             if "/images/" in name:
@@ -133,13 +162,19 @@ def parse_bundle_zip(raw: bytes) -> ParsedBundle:
     if products:
         sections["products"] = products
 
-    return ParsedBundle(sections=sections, assets=assets, asset_urls=asset_urls)
+    return ParsedBundle(sections=sections, assets=assets, asset_urls=asset_urls, orders=orders, order_logs=order_logs)
 
 
 from bson import ObjectId
 from bson.errors import InvalidId
 
 from src.services.cache_service import cache
+from src.services.order_backup_service import (
+    OrdersImportResult,
+    ParsedOrdersBackup,
+    _inflate_datetimes as _inflate_order_datetimes,
+    restore_orders_backup,
+)
 
 
 @dataclass
@@ -150,6 +185,10 @@ class ImportResult:
     assets_restored: int = 0
     assets_failed: int = 0
     assets_deduplicated: int = 0
+    orders_restored: int = 0
+    orders_skipped: int = 0
+    order_logs_restored: int = 0
+    order_logs_skipped: int = 0
 
 
 def _asset_extension(zip_path: str) -> str:
@@ -338,6 +377,15 @@ async def restore_bundle(parsed: ParsedBundle, database, r2_service) -> ImportRe
             continue
         await _restore_section(key, value, database, result)
 
+    if parsed.orders or parsed.order_logs:
+        orders_result = await restore_orders_backup(
+            ParsedOrdersBackup(orders=parsed.orders, order_logs=parsed.order_logs), database
+        )
+        result.orders_restored = orders_result.orders_restored
+        result.orders_skipped = orders_result.orders_skipped
+        result.order_logs_restored = orders_result.order_logs_restored
+        result.order_logs_skipped = orders_result.order_logs_skipped
+
     await cache.delete_pattern("chokmoki:*")
     await ensure_restore_indexes(database)
     return result
@@ -350,10 +398,16 @@ class RestorePlan:
     sections_skip_reasons: Dict[str, str] = field(default_factory=dict)
     assets_to_upload: int = 0
     id_diff: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)  # section -> {"new": [...], "overwriting": [...]}
+    orders_to_restore: int = 0
+    order_logs_to_restore: int = 0
 
 
 async def plan_restore(parsed: ParsedBundle, database) -> RestorePlan:
-    plan = RestorePlan(assets_to_upload=len(parsed.assets))
+    plan = RestorePlan(
+        assets_to_upload=len(parsed.assets),
+        orders_to_restore=len(parsed.orders),
+        order_logs_to_restore=len(parsed.order_logs),
+    )
 
     for key, value in parsed.sections.items():
         if isinstance(value, dict) and "__error" in value:
