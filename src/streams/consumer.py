@@ -17,6 +17,7 @@ CLAIM_EVERY_N_LOOPS = 6
 MAX_DELIVERY_ATTEMPTS = 5
 
 EventHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
+FailureHandler = Callable[[str, Dict[str, Any], int, Exception], Awaitable[None]]
 
 
 class StreamConsumer:
@@ -33,10 +34,17 @@ class StreamConsumer:
     on per-request serverless invocations.
     """
 
-    def __init__(self, stream_key: str, group_name: str, handler: EventHandler) -> None:
+    def __init__(
+        self,
+        stream_key: str,
+        group_name: str,
+        handler: EventHandler,
+        on_failure: Optional[FailureHandler] = None,
+    ) -> None:
         self._stream_key = stream_key
         self._group_name = group_name
         self._handler = handler
+        self._on_failure = on_failure
         self._consumer_name = f"{socket.gethostname()}-{id(self)}"
         self._loops_since_claim = 0
         self._redis: Optional[redis_asyncio.Redis] = None
@@ -100,6 +108,7 @@ class StreamConsumer:
 
     async def _process(self, redis: Any, entry_id: str, fields: Dict[str, str]) -> None:
         event_type = fields.get("type", "")
+        payload: Dict[str, Any] = {}
         try:
             payload = json.loads(fields.get("payload", "{}"))
             await self._handler(event_type, payload)
@@ -110,6 +119,12 @@ class StreamConsumer:
                 logger.warning(
                     f"Stream handler failed for '{event_type}' (attempt {delivery_count}): {e}"
                 )
+            if self._on_failure is not None:
+                try:
+                    await self._on_failure(event_type, payload, delivery_count, e)
+                except Exception as callback_err:
+                    if logger:
+                        logger.warning(f"Stream consumer on_failure callback raised: {callback_err}")
             if delivery_count >= MAX_DELIVERY_ATTEMPTS:
                 if logger:
                     logger.error(

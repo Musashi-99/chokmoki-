@@ -4,12 +4,14 @@ from fastapi.responses import JSONResponse
 from typing import Any, Dict, Optional
 import json
 from api.bootstrap import (
+    EVENT_PAYMENT_CAPTURED,
     OrderCreateInput,
     OrderService,
     RazorpayService,
     ShiprocketService,
     get_client_ip,
     logger,
+    publish_order_event,
     settings,
 )
 from api.json_utils import JSONEncoder
@@ -123,6 +125,114 @@ async def api_create_order(request: Request, payload: Dict[str, Any]):
         )
     return JSONResponse(content=response_body)
 
+
+@router.post("/api/orders/initiate")
+async def api_initiate_order(request: Request, payload: Dict[str, Any]):
+    """Start a Razorpay (Checkout.js) order: reserve inventory, create the
+    Razorpay order, store the pending order in Redis. Returns order_id
+    immediately — the customer's order_id is known and screenshot-able
+    before the payment modal even opens, same as the COD flow.
+    """
+    if OrderService is None or OrderCreateInput is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    idem_key = request.headers.get("Idempotency-Key") or payload.get("idempotencyKey")
+    if (
+        settings
+        and settings.is_production
+        and settings.idempotency_required_in_production
+        and not idem_key
+    ):
+        raise HTTPException(status_code=400, detail="Idempotency-Key is required")
+
+    idem_service = IdempotencyService()
+    idem_storage_key = None
+    idem_fingerprint = None
+    if idem_key:
+        try:
+            idem_storage_key = idem_service.normalize_key(idem_key)
+            idem_fingerprint = idem_service.fingerprint(scope="order.initiate", payload=payload)
+            cached = await idem_service.begin(idem_storage_key, idem_fingerprint)
+            if cached:
+                return JSONResponse(status_code=cached.status_code, content=cached.body)
+        except IdempotencyConflictError:
+            raise HTTPException(status_code=409, detail="Idempotency-Key reused with different payload")
+        except IdempotencyInProgressError:
+            raise HTTPException(
+                status_code=409,
+                detail="A request with this Idempotency-Key is already being processed",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        payload.setdefault("paymentMethod", "razorpay")
+        order_data = OrderCreateInput(**payload)
+        service = OrderService()
+        client_ip = get_client_ip(request) if get_client_ip else None
+        result = await service.initiate_order(order_data, ip=client_ip)
+    except HTTPException:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
+        raise
+    except ValueError as e:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if idem_storage_key:
+            await idem_service.release_lock(idem_storage_key)
+        if logger:
+            logger.error(f"Order initiation failed: {e}")
+        raise HTTPException(status_code=500) from e
+
+    response_body = json.loads(json.dumps(result.model_dump(), cls=JSONEncoder))
+    if idem_storage_key and idem_fingerprint:
+        await idem_service.store(
+            idem_storage_key,
+            idem_fingerprint,
+            status_code=200,
+            body=response_body,
+        )
+    return JSONResponse(content=response_body)
+
+
+@router.post("/api/orders/verify")
+async def api_verify_order_payment(payload: Dict[str, Any]):
+    """Client-side Checkout.js success-callback fast path. NOT the source of
+    truth — that's the webhook/stream path (see /webhook/razorpay below) —
+    this just lets the customer see "confirmed" without waiting on the
+    webhook round trip. Both converge on the same idempotent
+    complete_pending_order(), so calling both is safe.
+    """
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    order_id = payload.get("order_id") or payload.get("orderId")
+    razorpay_order_id = payload.get("razorpay_order_id") or payload.get("razorpayOrderId")
+    razorpay_payment_id = payload.get("razorpay_payment_id") or payload.get("razorpayPaymentId")
+    razorpay_signature = payload.get("razorpay_signature") or payload.get("razorpaySignature")
+
+    if not all([order_id, razorpay_order_id, razorpay_payment_id, razorpay_signature]):
+        raise HTTPException(status_code=400, detail="Missing required payment verification fields")
+
+    try:
+        service = OrderService()
+        order = await service.verify_payment(
+            order_id, razorpay_order_id, razorpay_payment_id, razorpay_signature
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if logger:
+            logger.error(f"Payment verification failed for {order_id}: {e}")
+        raise HTTPException(status_code=500) from e
+
+    return JSONResponse(content=json.loads(json.dumps(
+        order.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
 @router.post("/webhook/razorpay")
 async def razorpay_webhook(
     request: Request,
@@ -163,48 +273,55 @@ async def razorpay_webhook(
         event = webhook_data.get("event")
         payload_data = webhook_data.get("payload", {})
         
-        if event == "payment.captured":
+        # Both events carry a full payload.payment.entity with identical shape.
+        # Not every Razorpay webhook config has "payment.captured" checked —
+        # some only enable "order.paid"/"payment.authorized" — so both must
+        # be treated as valid completion signals, or a real successful
+        # payment can silently never complete our order (confirmed live: a
+        # real test payment fired payment.authorized + order.paid but never
+        # payment.captured, because that event type wasn't subscribed).
+        if event in ("payment.captured", "order.paid"):
             payment_entity = payload_data.get("payment", {}).get("entity", {})
-            
+
             razorpay_payment_id = payment_entity.get("id")
             razorpay_order_id = payment_entity.get("order_id")
             order_id = payment_entity.get("notes", {}).get("order_id")
-            
+
             if not all([order_id, razorpay_order_id, razorpay_payment_id]):
-                logger.warning(f"Incomplete webhook data. Missing: order_id={order_id}, razorpay_order_id={razorpay_order_id}, razorpay_payment_id={razorpay_payment_id}")
+                logger.warning(f"Incomplete webhook data (event={event}). Missing: order_id={order_id}, razorpay_order_id={razorpay_order_id}, razorpay_payment_id={razorpay_payment_id}")
                 logger.debug(f"Full webhook payload: {webhook_data}")
                 return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
-            
-            order_service = OrderService()
-            try:
-                _order, completion_status = await order_service.complete_pending_order(
-                    order_id, razorpay_order_id, razorpay_payment_id
-                )
-                if completion_status == "not_found":
-                    logger.warning(
-                        f"Order {order_id} not found in Redis, may already be processed"
-                    )
-                    return JSONResponse(
-                        content={"status": "ignored", "reason": "order_not_found"}
-                    )
-                message = (
-                    "already_processed"
-                    if completion_status == "existing"
-                    else "created"
-                )
-                return JSONResponse(
-                    content={
-                        "status": "success",
+
+            # Durable, crash-safe processing: verify (above) is the only part
+            # that must stay synchronous. The actual Mongo write happens in
+            # src/orders/consumer.py via XREADGROUP — if this process crashes
+            # between this XADD and the consumer acking it, XAUTOCLAIM
+            # redelivers on restart (safe: complete_pending_order() is
+            # idempotent). Razorpay only needs a fast 200 here.
+            if publish_order_event is not None:
+                await publish_order_event(
+                    EVENT_PAYMENT_CAPTURED,
+                    {
                         "order_id": order_id,
-                        "message": message,
-                    }
+                        "razorpay_order_id": razorpay_order_id,
+                        "razorpay_payment_id": razorpay_payment_id,
+                    },
                 )
-            except Exception as e:
-                logger.error(f"Failed to process webhook for order {order_id}: {e}")
-                raise HTTPException(
-                    status_code=500,
-                )
-        
+            return JSONResponse(content={"status": "accepted", "order_id": order_id})
+
+        if event == "payment.failed":
+            failed_entity = payload_data.get("payment", {}).get("entity", {})
+            logger.warning(
+                f"Razorpay payment.failed for order_id="
+                f"{failed_entity.get('notes', {}).get('order_id')}: "
+                f"code={failed_entity.get('error_code')} "
+                f"reason={failed_entity.get('error_reason')} "
+                f"description={failed_entity.get('error_description')} "
+                f"step={failed_entity.get('error_step')} "
+                f"source={failed_entity.get('error_source')}"
+            )
+            return JSONResponse(content={"status": "ignored", "event": event})
+
         logger.info(f"Webhook event {event} received but not processed")
         return JSONResponse(content={"status": "ignored", "event": event})
     

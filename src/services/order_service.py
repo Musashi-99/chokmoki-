@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from datetime import datetime
 import uuid
@@ -12,6 +12,7 @@ from src.models.product import Product
 from src.services.product_service import ProductService
 from src.services.inventory_service import InventoryService
 from src.services.razorpay_service import RazorpayService
+from src.services import order_ledger
 from src.config import settings
 from src.plugins.logger import logger
 from src.fraud.models import FraudAction, FraudContext
@@ -53,6 +54,7 @@ class OrderService:
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
         await orders_collection.create_index("order_id", unique=True)
         await logs_collection.create_index("order_id", unique=True)
+        await order_ledger.ensure_indexes()
 
     def _order_from_doc(self, order_doc: dict) -> Order:
         if isinstance(order_doc.get("shipping_address"), dict):
@@ -137,6 +139,14 @@ class OrderService:
             )
             if publish_alert:
                 await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(saved))
+            await order_ledger.append_event(
+                order_id, "order_created", "customer",
+                {"payment_method": "razorpay", "total_amount": order_dict.get("total_amount")},
+            )
+            await order_ledger.append_event(
+                order_id, "payment_captured", "system",
+                {"razorpay_order_id": razorpay_order_id, "razorpay_payment_id": razorpay_payment_id},
+            )
 
         await self._clear_pending_redis(order_id)
         status = "created" if created else "existing"
@@ -351,15 +361,17 @@ class OrderService:
             "shipping": pricing.shipping,
             "total_amount": pricing.total,
             "payment_method": order_data.paymentMethod or "cod",
-            "payment_status": "completed" if order_data.paymentMethod == "cod" else None,
+            # COD cash hasn't actually been collected yet at order time — admin
+            # must explicitly mark it collected via mark_payment_collected().
+            "payment_status": "pending",
             "status": OrderStatus(type="accepted").model_dump(),
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log
         }
-        
+
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
-        
+
         # Convert log to dict for MongoDB
         log_dict = {
             "order_id": order_id,
@@ -367,9 +379,13 @@ class OrderService:
             "created_at": datetime.utcnow()
         }
         await logs_collection.insert_one(log_dict)
-        
+
         if publish_alert:
             await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))
+        await order_ledger.append_event(
+            order_id, "order_created", "customer",
+            {"payment_method": order_dict["payment_method"], "total_amount": order_dict["total_amount"]},
+        )
 
         logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
         # Convert shipping_address dict to DTO when creating Order
@@ -510,6 +526,10 @@ class OrderService:
 
         if publish_alert:
             await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))
+        await order_ledger.append_event(
+            order_id, "order_created", "admin",
+            {"payment_method": payment_method, "total_amount": total_amount, "source": "admin_dashboard"},
+        )
 
         logger.info(f"Admin order created: {order_id}")
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
@@ -683,21 +703,86 @@ class OrderService:
     async def update_status(
         self,
         order_id: str,
-        status: OrderStatus
+        status: OrderStatus,
+        actor: str = "admin",
     ) -> Optional[Order]:
         """Update order status by order_id"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        
+
+        existing = await collection.find_one({"order_id": order_id}, {"status": 1})
+        previous_type = (existing or {}).get("status", {}).get("type")
+
         result = await collection.update_one(
             {"order_id": order_id},
             {"$set": {"status": status.model_dump()}}
         )
-        
+
         if result.matched_count == 0:
             return None
+        await order_ledger.append_event(
+            order_id, "status_changed", actor,
+            {"from": previous_type, "to": status.type, "reason": status.reason},
+        )
         return await self.get_by_id(order_id)
-    
+
+    async def mark_payment_collected(self, order_id: str, actor: str) -> Optional[Order]:
+        """Admin-explicit action: cash for a COD order has actually been
+        collected. Replaces the old implicit "COD = paid at order time"
+        assumption — payment_status now starts 'pending' for every order.
+        """
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+
+        result = await collection.update_one(
+            {"order_id": order_id},
+            {"$set": {"payment_status": "completed"}},
+        )
+        if result.matched_count == 0:
+            return None
+        await order_ledger.append_event(order_id, "payment_marked_collected", actor, {})
+        return await self.get_by_id(order_id)
+
+    async def set_custom_status(self, order_id: str, custom_status: Optional[str], actor: str) -> Optional[Order]:
+        """Admin-only operational tag, orthogonal to status.type — never
+        touched by webhooks or system logic.
+        """
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+
+        existing = await collection.find_one({"order_id": order_id}, {"custom_status": 1})
+        if existing is None:
+            return None
+        previous = existing.get("custom_status")
+
+        await collection.update_one(
+            {"order_id": order_id},
+            {"$set": {"custom_status": custom_status}},
+        )
+        await order_ledger.append_event(
+            order_id, "custom_status_changed", actor, {"from": previous, "to": custom_status},
+        )
+        return await self.get_by_id(order_id)
+
+    async def add_note(self, order_id: str, text: str, author_email: str) -> Optional[Order]:
+        """Append-only admin annotation — no edit/delete, this is a record."""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+
+        note = {"text": text, "author_email": author_email, "created_at": datetime.utcnow().isoformat()}
+        result = await collection.update_one(
+            {"order_id": order_id},
+            {"$push": {"notes": note}},
+        )
+        if result.matched_count == 0:
+            return None
+        await order_ledger.append_event(order_id, "note_added", author_email, {"text": text})
+        return await self.get_by_id(order_id)
+
+    async def get_events(self, order_id: str) -> List[Dict[str, Any]]:
+        return await order_ledger.get_events(order_id)
+
+
     async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO]:
         """Validate order items and recalculate pricing - shared logic"""
         product_service = ProductService()
@@ -808,7 +893,11 @@ class OrderService:
         await redis.set(redis_key, json.dumps(order_dict, default=str), keepttl=True)
 
         logger.info(f"Order initiated: {order_id}, Razorpay order: {razorpay_order.id}")
-        
+        await order_ledger.append_event(
+            order_id, "payment_initiated", "customer",
+            {"razorpay_order_id": razorpay_order.id, "amount": pricing.total},
+        )
+
         return OrderInitiateResponseDTO(
             order_id=order_id,
             razorpay_order_id=razorpay_order.id,

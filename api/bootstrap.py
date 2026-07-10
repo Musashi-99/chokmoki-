@@ -18,7 +18,7 @@ try:
     from src.services.shiprocket_service import ShiprocketService
     from src.shiprocket.client import ShiprocketAPIError, ShiprocketNotConfiguredError
     from src.services.telegram_service import TelegramService
-    from src.alerts.consumer import AlertConsumer
+    from src.orders.events import EVENT_PAYMENT_CAPTURED, publish_order_event
     from src.plugins.logger import logger
     from src.config import settings
     from src.security.error_handling import register_exception_handlers
@@ -93,7 +93,8 @@ except Exception as e:
     ShiprocketAPIError = None
     ShiprocketNotConfiguredError = None
     TelegramService = None
-    AlertConsumer = None
+    EVENT_PAYMENT_CAPTURED = None
+    publish_order_event = None
     logger = None
     settings = None
     RateLimitMiddleware = None

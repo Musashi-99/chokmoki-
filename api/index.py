@@ -5,7 +5,6 @@ src/services/ layout); optional/app-specific imports live in api/bootstrap.py
 so a broken import can't crash the whole app at boot.
 """
 from contextlib import asynccontextmanager
-import asyncio
 import sys
 
 from fastapi import FastAPI
@@ -16,7 +15,6 @@ load_dotenv(override=False)
 
 from api.bootstrap import (
     AdminAuditMiddleware,
-    AlertConsumer,
     CorrelationIdMiddleware,
     OrderService,
     R2Service,
@@ -62,18 +60,13 @@ async def lifespan(app: FastAPI):
             logger.error(f"Startup connection error: {e}")
         print(f"Startup connection error: {e}", file=sys.stderr)
 
-    alert_consumer_task = None
-    if AlertConsumer is not None and settings is not None and settings.telegram_enabled:
-        alert_consumer_task = asyncio.create_task(AlertConsumer().run())
-
+    # Background stream consumers (Telegram alerts, crash-safe Razorpay
+    # payment confirmation) run in the SEPARATE `worker` process/container
+    # (src/worker.py, `python -m src.worker`) — not here. This process only
+    # publishes events (XADD, sub-millisecond) and serves requests; it no
+    # longer runs any consumer, so an API restart/crash can never drop an
+    # in-flight payment confirmation.
     yield
-
-    if alert_consumer_task is not None:
-        alert_consumer_task.cancel()
-        try:
-            await alert_consumer_task
-        except asyncio.CancelledError:
-            pass
 
     try:
         if db:

@@ -30,7 +30,7 @@ class LoggerSidecar:
             try:
                 os.makedirs(settings.log_dir, exist_ok=True)
                 file_handler = RotatingFileHandler(
-                    os.path.join(settings.log_dir, "app.log"),
+                    os.path.join(settings.log_dir, settings.log_file_name),
                     maxBytes=20 * 1024 * 1024,
                     backupCount=10,
                 )

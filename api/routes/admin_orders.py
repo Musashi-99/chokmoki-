@@ -17,6 +17,7 @@ from api.bootstrap import (
     require_admin,
 )
 from api.json_utils import JSONEncoder, _json_response_content
+from src.services import order_ledger
 
 router = APIRouter()
 
@@ -93,7 +94,7 @@ async def admin_update_order_status(
             order = await service.get_by_mongo_id(order_id)
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
-        updated = await service.update_status(order.order_id, status)
+        updated = await service.update_status(order.order_id, status, actor=email)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors())
     except Exception as e:
@@ -120,6 +121,77 @@ async def admin_get_order(order_id: str, email: str = Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Order not found")
     return JSONResponse(content=json.loads(json.dumps(
         order.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@router.get("/api/admin/orders/{order_id}/events")
+async def admin_get_order_events(order_id: str, email: str = Depends(require_admin)):
+    """Unified per-order timeline — merges creation, payment, status,
+    fulfillment, shipment, and note events into one chronological view.
+    """
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    service = OrderService()
+    events = await service.get_events(order_id)
+    return {"data": events}
+
+
+@router.post("/api/admin/orders/{order_id}/notes")
+async def admin_add_order_note(
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Append-only admin annotation — no edit/delete, this is a record."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note text is required")
+
+    service = OrderService()
+    updated = await service.add_note(order_id, text, email)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@router.post("/api/admin/orders/{order_id}/custom-status")
+async def admin_set_custom_status(
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    """Admin-only operational tag, orthogonal to status.type — never
+    touched by webhooks or system logic.
+    """
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    custom_status = payload.get("custom_status")
+    service = OrderService()
+    updated = await service.set_custom_status(order_id, custom_status, email)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@router.post("/api/admin/orders/{order_id}/mark-payment-collected")
+async def admin_mark_payment_collected(order_id: str, email: str = Depends(require_admin)):
+    """Explicit admin action confirming COD cash was actually collected —
+    payment_status starts 'pending' for every order now, this is the step
+    that replaces the old implicit "COD = paid at order time" assumption.
+    """
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = OrderService()
+    updated = await service.mark_payment_collected(order_id, email)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
 
 
@@ -185,6 +257,9 @@ async def admin_mark_order_packed(order_id: str, email: str = Depends(require_ad
     database = await db.get_database()
     await database["orders"].update_one(
         {"order_id": order.order_id}, {"$set": {"fulfillment_status": "packed"}}
+    )
+    await order_ledger.append_event(
+        order.order_id, "fulfillment_changed", email, {"from": order.fulfillment_status, "to": "packed"},
     )
     return {"success": True, "fulfillment_status": "packed"}
 

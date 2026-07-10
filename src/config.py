@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # so logs survive container restarts/rebuilds and can be pulled off the
     # server independently of `docker logs` (which is not persistent).
     log_dir: str = Field(default="/app/logs", env="LOG_DIR")
+    # Distinct filename per process (api vs worker) sharing the same mounted
+    # volume — two OS processes rotating/appending the SAME file concurrently
+    # would corrupt each other's file position/rotation state.
+    log_file_name: str = Field(default="app.log", env="LOG_FILE_NAME")
 
     # Razorpay
     razorpay_key_id: str = Field(..., env="RAZORPAY_KEY_ID")

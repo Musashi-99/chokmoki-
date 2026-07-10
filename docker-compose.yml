@@ -60,6 +60,42 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    # Same image/Dockerfile as backend — just a different process entrypoint
+    # and container, so background stream consumers (Telegram alerts,
+    # crash-safe Razorpay payment confirmation) run separately from the
+    # request-serving API. An API restart/crash can never drop an in-flight
+    # payment confirmation, and vice versa. See src/worker.py.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chokmoki-worker
+    restart: unless-stopped
+    command: ["python", "-m", "src.worker"]
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/chokmoki
+      REDIS_URL: redis://redis:6379/0
+      REDIS_SOCKET_TIMEOUT: "10"
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      # Distinct filename from backend's app.log — two processes rotating the
+      # same file concurrently would corrupt each other's rotation state.
+      LOG_FILE_NAME: worker.log
+    volumes:
+      - backend_logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # The Dockerfile's HEALTHCHECK curls /health on port 8000 (the API's
+    # endpoint) — this process isn't an HTTP server at all, so that check
+    # would always fail and wrongly report "unhealthy". Nothing depends_on
+    # this service, so there's no functional need for a healthcheck here.
+    healthcheck:
+      disable: true
+
 volumes:
   mongodb_data:
   redis_data:

@@ -16,6 +16,7 @@ from src.config import settings
 from src.database.connection import db
 from src.plugins.logger import logger
 from src.services.product_service import ProductService
+from src.services import order_ledger
 from src.shiprocket.client import ShiprocketAPIError, ShiprocketClient, ShiprocketNotConfiguredError
 
 # Optional alerts import (matches the established pattern in order_service.py)
@@ -94,6 +95,14 @@ class ShiprocketService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await collection.update_one({"order_id": order_id}, {"$push": {"shipment_status_history": entry}})
+        # Single choke point for all 4 shipment-status transitions (AWB
+        # assigned, pickup scheduled, webhook/track updates, cancel) — mirrors
+        # into the unified order_events ledger alongside the existing
+        # shipment-specific history array (additive, doesn't touch that array).
+        actor = "admin" if raw_status in ("AWB Assigned", "Pickup scheduled", "Cancelled by admin") else "shiprocket_webhook"
+        await order_ledger.append_event(
+            order_id, "shipment_status_changed", actor, {"status": status, "raw_status": raw_status},
+        )
 
     async def _record_scans(self, order_id: str, scans: List[Dict[str, Any]]) -> None:
         """Persist Shiprocket's raw courier scan events (date/activity/location).
@@ -506,6 +515,9 @@ class ShiprocketService:
         # AWB assignment (the essential part) succeeded even if label/invoice/
         # pickup soft-failed above — those can be retried individually later.
         await collection.update_one({"order_id": order_id}, {"$set": {"fulfillment_status": "shipped"}})
+        await order_ledger.append_event(
+            order_id, "fulfillment_changed", "admin", {"from": "packed", "to": "shipped"},
+        )
 
         if publish_alert:
             await publish_alert(

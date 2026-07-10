@@ -143,6 +143,21 @@ class Order(BaseModel):
     shipment_status_history: List[Dict[str, Any]] = Field(default_factory=list)
     shipment_scans: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # --- Unified order-status system (admin-only annotations, independent of
+    # any system-driven status field above) ---
+    custom_status: Optional[Literal[
+        "on_hold",
+        "priority",
+        "escalated",
+        "awaiting_customer_response",
+        "damaged",
+        "needs_review",
+        "refund_requested",
+        "refunded",
+        "duplicate",
+    ]] = None
+    notes: List[Dict[str, Any]] = Field(default_factory=list)  # [{text, author_email, created_at}], append-only
+
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,

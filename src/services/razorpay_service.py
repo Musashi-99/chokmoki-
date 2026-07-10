@@ -20,7 +20,17 @@ class RazorpayService:
             order_data = {
                 "amount": int(amount * 100),
                 "currency": currency,
-                "notes": notes or {}
+                "notes": notes or {},
+                # Explicit auto-capture — without this, whether a successful
+                # payment ever becomes "captured" (vs. sitting "authorized"
+                # forever, requiring a separate manual capture call) depends
+                # on the account's dashboard default, which we don't control
+                # or want to depend on. Confirmed live: a real payment
+                # authorized but never auto-captured, and the order only
+                # completed via the client-side verify() fast path instead
+                # of the webhook — the webhook (our source of truth) never
+                # fired a completing event for it at all.
+                "payment_capture": 1,
             }
             order_dict = self.client.order.create(data=order_data)
             logger.info(f"Razorpay order created: {order_dict['id']}")
