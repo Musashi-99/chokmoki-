@@ -109,6 +109,7 @@ from api.routes import (
     admin_catalog,
     admin_content,
     admin_fraud,
+    admin_import,
     admin_inbox,
     admin_orders,
     admin_upload,
@@ -126,6 +127,7 @@ app.include_router(contact.router)
 app.include_router(orders.router)
 app.include_router(admin_auth.router)
 app.include_router(admin_upload.router)
+app.include_router(admin_import.router)
 app.include_router(admin_orders.router)
 app.include_router(admin_catalog.router)
 app.include_router(admin_content.router)

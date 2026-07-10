@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     r2_bucket: str = Field(default="chokmoki", env="R2_BUCKET")
     r2_key_prefix: str = Field(default="", env="R2_KEY_PREFIX")
     r2_public_base_url: str = Field(default="", env="R2_PUBLIC_BASE_URL")
+    # Optional override for local/sandbox testing against an S3-compatible mock
+    # (e.g. MinIO). Unset in production -> R2Service builds the real Cloudflare
+    # R2 endpoint from r2_account_id as before.
+    r2_endpoint_url: str = Field(default="", env="R2_ENDPOINT_URL")
 
     # Rate Limiting
     rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
