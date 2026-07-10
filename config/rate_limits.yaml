@@ -103,15 +103,18 @@ rules:
     match:
       methods: ["*"]
       paths: [/api/admin/*]
+    # The full-site export fetches every section + downloads every asset through
+    # the admin API. Burst must cover at least section fetches + asset downloads
+    # in one export run, or sites with many photos get throttled mid-export.
     buckets:
       - scope: ip
-        rate: 120
+        rate: 500
         window: 1m
-        burst: 30
+        burst: 200
       - scope: admin
-        rate: 60
+        rate: 500
         window: 1m
-        burst: 30
+        burst: 200
 
   - id: admin_upload
     match:

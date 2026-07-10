@@ -22,13 +22,20 @@ class R2Service:
 
     def _get_client(self):
         if self._client is None:
-            endpoint = f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
+            endpoint = settings.r2_endpoint_url or f"https://{settings.r2_account_id}.r2.cloudflarestorage.com"
+            # Path-style addressing is only needed for S3-compatible mocks (e.g. MinIO
+            # in sandbox/local testing) that don't support virtual-hosted-style buckets.
+            # Gated on the same override as the endpoint itself, so production (where
+            # R2_ENDPOINT_URL is unset) gets the exact same Config as before this change.
+            config_kwargs = {"signature_version": "s3v4"}
+            if settings.r2_endpoint_url:
+                config_kwargs["s3"] = {"addressing_style": "path"}
             self._client = boto3.client(
                 "s3",
                 endpoint_url=endpoint,
                 aws_access_key_id=settings.r2_access_key_id,
                 aws_secret_access_key=settings.r2_secret_access_key,
-                config=Config(signature_version="s3v4"),
+                config=Config(**config_kwargs),
                 region_name="auto",
             )
         return self._client

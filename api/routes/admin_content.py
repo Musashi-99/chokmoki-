@@ -773,6 +773,14 @@ async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admi
 
 
 ASSET_PROXY_ALLOWED_HOSTS = {"cdn.amplifycheckout.com", "images.unsplash.com"}
+if settings.r2_public_base_url:
+    parsed = urlparse(settings.r2_public_base_url)
+    if parsed.hostname and parsed.hostname not in ASSET_PROXY_ALLOWED_HOSTS:
+        ASSET_PROXY_ALLOWED_HOSTS.add(parsed.hostname)
+if settings.r2_endpoint_url:
+    parsed = urlparse(settings.r2_endpoint_url)
+    if parsed.hostname and parsed.hostname not in ASSET_PROXY_ALLOWED_HOSTS:
+        ASSET_PROXY_ALLOWED_HOSTS.add(parsed.hostname)
 
 
 @router.get("/api/admin/asset-proxy")
@@ -789,8 +797,22 @@ async def admin_asset_proxy(url: str, email: str = Depends(require_admin)):
     if host not in ASSET_PROXY_ALLOWED_HOSTS:
         raise HTTPException(status_code=400, detail="Asset host not allowed")
 
+    # When the asset URL points to the configured public base URL (e.g.
+    # localhost:9002 in sandbox) but the proxy runs inside Docker where that
+    # host isn't reachable, rewrite to use the internal endpoint URL instead.
+    fetch_url = url
+    if settings.r2_public_base_url and settings.r2_endpoint_url:
+        target = urlparse(url)
+        public = urlparse(settings.r2_public_base_url)
+        if target.hostname == public.hostname and target.port == public.port:
+            endpoint = urlparse(settings.r2_endpoint_url)
+            fetch_url = urlparse(url)._replace(
+                scheme=endpoint.scheme or target.scheme,
+                netloc=endpoint.netloc or endpoint.hostname or "",
+            ).geturl()
+
     client = httpx.AsyncClient(timeout=30.0)
-    req = client.build_request("GET", url)
+    req = client.build_request("GET", fetch_url)
     resp = await client.send(req, stream=True)
     if resp.status_code != 200:
         await resp.aclose()
