@@ -39,6 +39,20 @@ rules:
         window: 1h
         burst: 5
 
+  # "My Orders" lookup (email + phone, no account/auth). Tight cap — this
+  # is the one public endpoint that returns another person's order data if
+  # both fields are guessed, so it needs to resist brute-forcing far more
+  # than a normal form submit.
+  - id: orders_lookup
+    match:
+      methods: [POST]
+      paths: [/api/orders/lookup]
+    buckets:
+      - scope: ip
+        rate: 10
+        window: 1h
+        burst: 5
+
   # Public contact form. burst was 1 with 1/hour per email — a single
   # legitimate resubmission (typo fix, "did that send?") would get blocked.
   - id: contact
@@ -103,15 +117,18 @@ rules:
     match:
       methods: ["*"]
       paths: [/api/admin/*]
+    # The full-site export fetches every section + downloads every asset through
+    # the admin API. Burst must cover at least section fetches + asset downloads
+    # in one export run, or sites with many photos get throttled mid-export.
     buckets:
       - scope: ip
-        rate: 120
+        rate: 500
         window: 1m
-        burst: 30
+        burst: 200
       - scope: admin
-        rate: 60
+        rate: 500
         window: 1m
-        burst: 30
+        burst: 200
 
   - id: admin_upload
     match:
