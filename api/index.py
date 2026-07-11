@@ -99,6 +99,7 @@ if CorrelationIdMiddleware:
 
 from api.routes import (
     admin_auth,
+    admin_backup,
     admin_catalog,
     admin_content,
     admin_fraud,
@@ -122,6 +123,7 @@ app.include_router(orders.router)
 app.include_router(admin_auth.router)
 app.include_router(admin_upload.router)
 app.include_router(admin_import.router)
+app.include_router(admin_backup.router)
 app.include_router(admin_orders_backup.router)
 app.include_router(admin_orders.router)
 app.include_router(admin_catalog.router)
