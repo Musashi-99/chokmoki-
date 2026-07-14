@@ -346,9 +346,20 @@ class PaymentReconciliationService:
         attempts_collection = database[PAYMENT_ATTEMPTS_COLLECTION]
 
         try:
+            # ALL still-pending attempts, not just those inside the window —
+            # confirmed live in production: filtering here on
+            # created_at >= cutoff made the "abandoned" transition unreachable
+            # (aging out requires being OLDER than the cutoff, but such rows
+            # were excluded by this very query), so a genuinely-abandoned
+            # checkout stayed "pending" in the admin panel forever. Old
+            # attempts now flow through the throttled per-order fallback,
+            # which does one final authoritative Razorpay check (order-scoped,
+            # not time-windowed) before marking them abandoned — so even a
+            # payment older than the bulk window can't be wrongly abandoned.
+            # Oldest first so a backlog drains in order under the 500 cap.
             pending_attempts = await attempts_collection.find(
-                {"status": "pending", "created_at": {"$gte": cutoff}}
-            ).to_list(length=500)
+                {"status": "pending"}
+            ).sort("created_at", 1).to_list(length=500)
         except Exception as e:
             if logger:
                 logger.error(f"Payment reconcile: failed to load pending attempts: {e}")
@@ -470,20 +481,17 @@ class PaymentReconciliationService:
                     if logger:
                         logger.error(f"Payment reconcile: recovery failed for {order_id}: {e}")
             else:
-                # Not captured (yet). Age attempts out once past the window
-                # so we stop re-checking them forever and the collection
-                # doesn't accumulate permanently-unresolved noise.
-                if attempt["created_at"] <= cutoff:
-                    try:
-                        await attempts_collection.update_one(
-                            {"order_id": order_id},
-                            {"$set": {"status": "abandoned", "resolved_at": started_at}},
-                        )
-                        abandoned += 1
-                    except Exception as e:
-                        errors.append({"order_id": order_id, "error": str(e)})
-                else:
-                    still_pending_attempts.append(attempt)
+                # Not in the bulk window's captured set. ALL unmatched
+                # attempts — including ones already older than the window —
+                # go through the throttled per-order fallback, never straight
+                # to "abandoned": the bulk fetch only covers cutoff→now, so
+                # an old attempt whose payment was captured during a >window
+                # outage would be invisible to it. The fallback's
+                # fetch_captured_payment is order-scoped and timeless — one
+                # final authoritative Razorpay answer — and ITS aging logic
+                # (created_at <= cutoff → abandoned) then runs only after
+                # that check has come back empty.
+                still_pending_attempts.append(attempt)
 
         # Throttled fallback for whatever the bulk pass couldn't resolve.
         fallback_summary: Dict[str, Any] = {}

@@ -100,3 +100,20 @@ class SystemLogService:
             query["level"] = level
         cursor = database[SYSTEM_LOGS_COLLECTION].find(query).sort("created_at", -1).limit(limit)
         return await cursor.to_list(length=limit)
+
+    async def summary(self) -> Dict[str, Any]:
+        """Distinct components + per-level counts — powers the admin System
+        Logs page's filter dropdowns and its at-a-glance severity chips, so
+        an admin can see what kinds of operational events exist at all
+        without paging through every entry.
+        """
+        database = await self._db()
+        collection = database[SYSTEM_LOGS_COLLECTION]
+        components = sorted(await collection.distinct("component"))
+        level_counts = {
+            row["_id"]: row["count"]
+            async for row in collection.aggregate(
+                [{"$group": {"_id": "$level", "count": {"$sum": 1}}}]
+            )
+        }
+        return {"components": components, "level_counts": level_counts}
