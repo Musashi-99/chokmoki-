@@ -11,6 +11,7 @@ from src.alerts.events import (
     EVENT_ORDER_CREATED,
     EVENT_PRODUCT_PRICE_CHANGED,
     EVENT_SHIPMENT_UPDATE,
+    EVENT_SYSTEM_ERROR,
 )
 from src.plugins.logger import logger
 
@@ -224,6 +225,38 @@ class ShipmentUpdateHandler(AlertHandler):
         return True
 
 
+def _format_system_error_alert(payload: Dict[str, Any]) -> str:
+    component = payload.get("component", "unknown")
+    message = payload.get("message", "")
+    lines = [
+        "🚨 *System Error*",
+        f"Component: `{component}`",
+        message,
+    ]
+    context = payload.get("context") or {}
+    if context:
+        # Keep it short — this is a notification, not the full audit record
+        # (that's what the admin panel's System Logs view is for).
+        preview = ", ".join(f"{k}={v}" for k, v in list(context.items())[:5])
+        lines.append(f"_{preview}_")
+    return "\n".join(lines)
+
+
+class SystemErrorHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type == EVENT_SYSTEM_ERROR
+
+    async def _process(self, event: AlertEvent) -> bool:
+        sent = await self._channel.send(_format_system_error_alert(event.payload))
+        if not sent:
+            raise RuntimeError("System error alert channel send failed")
+        return True
+
+
 class FallbackHandler(AlertHandler):
     """End of the chain — always matches. Logs and drops anything nobody
     else claimed (unknown event types, or admin mutations on resources
@@ -247,6 +280,7 @@ def build_chain(channel: NotificationChannel) -> AlertHandler:
     newsletter_handler = NewsletterSubscribedHandler(channel)
     shipment_handler = ShipmentUpdateHandler(channel)
     settings_handler = SettingsChangedHandler(channel)
+    system_error_handler = SystemErrorHandler(channel)
     fallback_handler = FallbackHandler()
 
     (
@@ -255,6 +289,7 @@ def build_chain(channel: NotificationChannel) -> AlertHandler:
         .set_next(newsletter_handler)
         .set_next(shipment_handler)
         .set_next(settings_handler)
+        .set_next(system_error_handler)
         .set_next(fallback_handler)
     )
     return order_handler

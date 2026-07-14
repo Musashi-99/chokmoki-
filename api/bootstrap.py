@@ -18,12 +18,14 @@ try:
     from src.services.shiprocket_service import ShiprocketService
     from src.shiprocket.client import ShiprocketAPIError, ShiprocketNotConfiguredError
     from src.services.telegram_service import TelegramService
-    from src.orders.events import EVENT_PAYMENT_CAPTURED, publish_order_event
+    from src.orders.events import EVENT_PAYMENT_CAPTURED, EVENT_SHIPMENT_UPDATE, publish_order_event
     from src.plugins.logger import logger
     from src.config import settings
     from src.security.error_handling import register_exception_handlers
     from src.security.mass_assignment import build_update_payload, require_update_fields
     from src.services.fraud_review_service import FraudReviewService
+    from src.services.payment_reconciliation_service import PaymentReconciliationService
+    from src.services.system_log_service import SystemLogService
     from src.middleware.correlation_id import CorrelationIdMiddleware
     from src.plugins.rate_limit import RateLimitMiddleware
     from src.plugins.admin_deps import require_admin, require_permission
@@ -104,6 +106,7 @@ except Exception as e:
     ShiprocketNotConfiguredError = None
     TelegramService = None
     EVENT_PAYMENT_CAPTURED = None
+    EVENT_SHIPMENT_UPDATE = None
     publish_order_event = None
     logger = None
     settings = None
@@ -180,5 +183,7 @@ except Exception as e:
     register_exception_handlers = None
     CorrelationIdMiddleware = None
     FraudReviewService = None
+    PaymentReconciliationService = None
+    SystemLogService = None
     build_update_payload = None
     require_update_fields = None

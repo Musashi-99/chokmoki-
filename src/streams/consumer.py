@@ -9,12 +9,15 @@ import redis.asyncio as redis_asyncio
 
 from src.config import settings
 from src.plugins.logger import logger
+from src.streams import event_bus
 
 BLOCK_MS = 5000
 BATCH_SIZE = 10
 CLAIM_IDLE_MS = 30_000
 CLAIM_EVERY_N_LOOPS = 6
 MAX_DELIVERY_ATTEMPTS = 5
+DLQ_SUFFIX = ":dlq"
+DLQ_MAXLEN = 2000
 
 EventHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
 FailureHandler = Callable[[str, Dict[str, Any], int, Exception], Awaitable[None]]
@@ -108,6 +111,13 @@ class StreamConsumer:
 
     async def _process(self, redis: Any, entry_id: str, fields: Dict[str, str]) -> None:
         event_type = fields.get("type", "")
+        # Set by src/streams/event_bus.py's publish() when the caller had one
+        # (e.g. the originating HTTP request's CorrelationIdMiddleware id) —
+        # threading it through failure/DLQ logging here ties a worker-side
+        # error back to the request that triggered it, instead of the API
+        # and worker logs being two unconnected timelines for what's really
+        # one causal chain.
+        correlation_id = fields.get("correlation_id")
         payload: Dict[str, Any] = {}
         try:
             payload = json.loads(fields.get("payload", "{}"))
@@ -117,7 +127,8 @@ class StreamConsumer:
             delivery_count = await self._delivery_count(redis, entry_id)
             if logger:
                 logger.warning(
-                    f"Stream handler failed for '{event_type}' (attempt {delivery_count}): {e}"
+                    f"Stream handler failed for '{event_type}' (attempt {delivery_count}) "
+                    f"[correlation_id={correlation_id}]: {e}"
                 )
             if self._on_failure is not None:
                 try:
@@ -129,8 +140,49 @@ class StreamConsumer:
                 if logger:
                     logger.error(
                         f"Dropping event {entry_id} from '{self._stream_key}' after "
-                        f"{delivery_count} failed attempts"
+                        f"{delivery_count} failed attempts [correlation_id={correlation_id}] — "
+                        f"moving to DLQ"
                     )
+                # Previously this just XACK'd and discarded the payload —
+                # the only trace left was a log line. A genuinely
+                # unprocessable event (bad data, a bug in the handler) is
+                # rare but not something a payment/shipment pipeline should
+                # ever silently lose; write it to a bounded dead-letter
+                # stream first so it's replayable/inspectable, then ack the
+                # original entry so the group stops redelivering it forever.
+                await event_bus.publish(
+                    f"{self._stream_key}{DLQ_SUFFIX}",
+                    event_type,
+                    {
+                        "original_entry_id": entry_id,
+                        "payload": payload,
+                        "delivery_count": delivery_count,
+                        "error": str(e),
+                        "correlation_id": correlation_id,
+                    },
+                    maxlen=DLQ_MAXLEN,
+                )
+                try:
+                    from src.services.system_log_service import SystemLogService
+
+                    await SystemLogService().log(
+                        component="stream_consumer",
+                        level="error",
+                        message=(
+                            f"Event '{event_type}' dropped from '{self._stream_key}' after "
+                            f"{delivery_count} failed attempts — moved to DLQ"
+                        ),
+                        context={
+                            "stream_key": self._stream_key,
+                            "event_type": event_type,
+                            "entry_id": entry_id,
+                            "delivery_count": delivery_count,
+                            "error": str(e),
+                            "correlation_id": correlation_id,
+                        },
+                    )
+                except Exception:
+                    pass
                 await redis.xack(self._stream_key, self._group_name, entry_id)
 
     async def run(self) -> None:

@@ -144,15 +144,30 @@ rules:
         window: 1m
         burst: 5
 
+  # Webhooks are already protected at the application layer (HMAC signature
+  # for Razorpay, x-api-key for Shiprocket) — rate limiting here is only a
+  # volume/DoS backstop, not a security control, so it can be generous enough
+  # to never realistically trip on legitimate delivery + retry traffic from
+  # either provider's own servers.
   - id: webhook_razorpay
     match:
       methods: [POST]
       paths: [/webhook/razorpay]
     buckets:
       - scope: ip
-        rate: 1000
+        rate: 6000
         window: 1m
-        burst: 100
+        burst: 600
+
+  - id: webhook_shiprocket
+    match:
+      methods: [GET, POST]
+      paths: [/webhook/courier-updates]
+    buckets:
+      - scope: ip
+        rate: 6000
+        window: 1m
+        burst: 600
 
   - id: public_get
     match:

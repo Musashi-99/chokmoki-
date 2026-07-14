@@ -13,6 +13,11 @@ EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
 EVENT_CONTACT_SUBMITTED = "contact.submitted"
 EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
 EVENT_SHIPMENT_UPDATE = "shipment.updated"
+# Fired by src/services/system_log_service.py for every level="error" entry
+# (circuit breaker trips, stream DLQ drops, worker task crashes, orphaned
+# payments) — the operational-error counterpart to the business alerts
+# above, reusing the same Telegram channel instead of a separate mechanism.
+EVENT_SYSTEM_ERROR = "system.error"
 
 
 async def publish_alert(event_type: str, payload: Dict[str, Any]) -> Optional[str]:

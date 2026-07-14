@@ -7,6 +7,10 @@ services:
     image: mongo:7
     container_name: chokmoki-mongodb
     restart: unless-stopped
+    # Caps so a runaway query/leak in one container can't starve the host or
+    # the other services — tune to your box's actual capacity.
+    mem_limit: 1g
+    cpus: 1.0
     ports:
       - "27018:27017"
     volumes:
@@ -23,6 +27,13 @@ services:
     image: redis:7-alpine
     container_name: chokmoki-redis
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    # Durability: without this, an unclean container stop/crash loses
+    # anything since the last RDB snapshot — including in-flight rate-limit
+    # counters, idempotency keys, inventory reservations, and (worse) any
+    # Redis Stream entries not yet consumed. AOF persists every write.
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6380:6379"
     volumes:
@@ -39,6 +50,8 @@ services:
       dockerfile: Dockerfile
     container_name: chokmoki-backend
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
     ports:
       - "8000:8000"
     env_file:
@@ -71,6 +84,8 @@ services:
       dockerfile: Dockerfile
     container_name: chokmoki-worker
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     command: ["python", "-m", "src.worker"]
     env_file:
       - .env
@@ -89,12 +104,23 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # The Dockerfile's HEALTHCHECK curls /health on port 8000 (the API's
-    # endpoint) — this process isn't an HTTP server at all, so that check
-    # would always fail and wrongly report "unhealthy". Nothing depends_on
-    # this service, so there's no functional need for a healthcheck here.
+    # The Dockerfile's HEALTHCHECK curls an HTTP endpoint — this process
+    # isn't an HTTP server at all, so that check would always fail and
+    # wrongly report "unhealthy". Instead, check freshness of the heartbeat
+    # file src/worker.py's heartbeat_loop touches every 15s — a stopped or
+    # wedged event loop stops updating it, which is exactly the silent-death
+    # failure mode the worker supervisor (src/worker.py main()) also guards
+    # against from the inside.
     healthcheck:
-      disable: true
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os,sys,time; p='/app/logs/worker.heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<60 else 1)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
 volumes:
   mongodb_data:

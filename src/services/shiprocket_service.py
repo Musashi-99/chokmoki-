@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from src.config import settings
 from src.database.connection import db
+from src.database.redis_connection import redis_client
 from src.plugins.logger import logger
 from src.services.product_service import ProductService
 from src.services import order_ledger
@@ -351,6 +352,32 @@ class ShiprocketService:
         return quotes
 
     async def ship_order(self, order_id: str, courier_company_id: Optional[int] = None) -> Dict[str, Any]:
+        """The "Ready to Ship" action — wrapped in a short-lived Redis lock so
+        a double-click or a retry-after-500 can't race the "already shipped?"
+        read (in _ship_order_impl below) against the Shiprocket API call and
+        create two real shipments. This closes the *concurrent*-call window;
+        _ship_order_impl's own field-presence checks are what make a
+        *sequential* retry after a genuine partial failure safe — the two
+        are complementary, not redundant.
+        """
+        redis = await redis_client.get_client()
+        lock_key = f"shiprocket:ship_lock:{order_id}"
+        # Long enough to cover create + AWB + label + invoice + pickup (each
+        # its own ~20s Shiprocket call) without holding the lock indefinitely
+        # if the process crashes mid-shipment.
+        acquired = await redis.set(lock_key, "1", nx=True, ex=120)
+        if not acquired:
+            raise ShiprocketAPIError(
+                "This order is already being shipped (another request is in "
+                "progress) — wait a moment and check its shipment status "
+                "before retrying."
+            )
+        try:
+            return await self._ship_order_impl(order_id, courier_company_id)
+        finally:
+            await redis.delete(lock_key)
+
+    async def _ship_order_impl(self, order_id: str, courier_company_id: Optional[int] = None) -> Dict[str, Any]:
         """The "Ready to Ship" action. Idempotent — safe to call again after a
         partial failure; already-completed steps are skipped.
         """

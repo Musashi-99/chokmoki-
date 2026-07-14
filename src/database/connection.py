@@ -15,8 +15,12 @@ class MongoSingleton:
     
     async def connect(self):
         if self._client is None:
-            max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "5"))
-            min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "0"))
+            # Previous defaults (5/0) were sized for a single dev container,
+            # not concurrent production load — idempotency checks, inventory
+            # reservations, order writes, and every background consumer all
+            # borrow from this same pool. Still fully overridable via env.
+            max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE", "50"))
+            min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE", "5"))
             max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "10000"))
             
             self._client = AsyncIOMotorClient(

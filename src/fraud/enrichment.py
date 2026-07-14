@@ -120,6 +120,15 @@ class FraudEnrichmentService:
     async def _duplicate_order_flag(
         self, *, email: str, payload: Dict[str, Any], event_type: str
     ) -> bool:
+        """Read-only check: has this exact cart (email+items) already
+        resulted in a REAL, successful order recently? Must NOT write here —
+        this runs on every attempt, including ones that fail/get abandoned
+        (a declined card, a closed Razorpay modal, switching payment method).
+        Marking on every attempt (the previous bug) meant a customer whose
+        first payment attempt didn't go through was hard-blocked from ever
+        completing that same cart, by ANY payment method, for the whole
+        dedup window — a real lost sale, not fraud. See mark_order_completed().
+        """
         if event_type not in {"order_create", "order_initiate"}:
             return False
         fingerprint = self._order_fingerprint(email=email, payload=payload)
@@ -128,8 +137,21 @@ class FraudEnrichmentService:
 
         redis = await redis_client.get_client()
         key = f"fraud:dup_order:{fingerprint}"
-        created = await redis.set(key, "1", nx=True, ex=settings.fraud_duplicate_window_seconds)
-        return not bool(created)
+        return bool(await redis.exists(key))
+
+    @classmethod
+    async def mark_order_completed(cls, *, email: str, payload: Dict[str, Any]) -> None:
+        """Call ONLY after an order actually, successfully completes (COD
+        placed, or Razorpay payment captured) — this is what makes a
+        genuinely repeated purchase attempt show up as a duplicate next time,
+        without penalizing a legitimate retry of a failed/abandoned one.
+        """
+        fingerprint = cls._order_fingerprint(email=email, payload=payload)
+        if not fingerprint:
+            return
+        redis = await redis_client.get_client()
+        key = f"fraud:dup_order:{fingerprint}"
+        await redis.set(key, "1", ex=settings.fraud_duplicate_window_seconds)
 
     @staticmethod
     def _order_fingerprint(*, email: str, payload: Dict[str, Any]) -> str:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -24,6 +25,13 @@ class ReservationLine:
 
 class InventoryService:
     COLLECTION_NAME = "products"
+    # Durable mirror of the Redis reservation key — see reserve_for_order()'s
+    # comment for why this exists. TTL sized generously past
+    # inventory_reservation_ttl_seconds (1h default) so there's a real window
+    # to recover a reservation whose Redis key already expired, without
+    # keeping resolved rows around forever.
+    RESERVATIONS_COLLECTION = "inventory_reservations"
+    RESERVATIONS_TTL_SECONDS = 7 * 24 * 3600
     RESERVATION_PREFIX = "inv:order:"
     PENDING_QTY_PREFIX = "inv:pending:"
     LOCK_PREFIX = "inv:lock:"
@@ -32,6 +40,15 @@ class InventoryService:
     @property
     def reservation_ttl(self) -> int:
         return settings.inventory_reservation_ttl_seconds
+
+    async def ensure_indexes(self) -> None:
+        database = await db.get_database()
+        collection = database[self.RESERVATIONS_COLLECTION]
+        await collection.create_index("order_id", unique=True)
+        await collection.create_index([("status", 1), ("created_at", 1)])
+        await collection.create_index(
+            "created_at", expireAfterSeconds=self.RESERVATIONS_TTL_SECONDS, name="created_at_ttl"
+        )
 
     def tracks_inventory(self, stock_qty: Optional[int]) -> bool:
         if not settings.inventory_enabled:
@@ -178,6 +195,29 @@ class InventoryService:
                 self.reservation_ttl,
                 payload,
             )
+            # Durable mirror, independent of the Redis key's TTL — if that
+            # key expires before commit_reservation/release_reservation runs
+            # (e.g. a payment recovered hours later via reconciliation), this
+            # is what lets the pending-quantity hold still get released
+            # instead of leaking forever. See commit_reservation/
+            # release_reservation/reconcile_stale_reservations below.
+            database = await db.get_database()
+            await database[self.RESERVATIONS_COLLECTION].update_one(
+                {"order_id": order_id},
+                {
+                    "$setOnInsert": {
+                        "order_id": order_id,
+                        "lines": [
+                            {"product_id": line.product_id, "quantity": line.quantity}
+                            for line in reserved
+                        ],
+                        "status": "reserved",
+                        "created_at": datetime.utcnow(),
+                        "resolved_at": None,
+                    }
+                },
+                upsert=True,
+            )
         except Exception:
             for line in reserved:
                 await self._adjust_pending_qty(line.product_id, -line.quantity)
@@ -195,10 +235,33 @@ class InventoryService:
             for row in data
         ]
 
+    async def _resolve_durable_mirror(self, order_id: str, status: str) -> Optional[dict]:
+        """Atomically mark the durable mirror resolved (committed/released)
+        if it's still 'reserved' — a safe no-op if already resolved (by a
+        concurrent caller or a prior run) or never written (inventory
+        tracking disabled, or the order had no trackable lines). The atomic
+        claim is what prevents double-processing if commit/release ever race
+        on the same order.
+        """
+        database = await db.get_database()
+        collection = database[self.RESERVATIONS_COLLECTION]
+        return await collection.find_one_and_update(
+            {"order_id": order_id, "status": "reserved"},
+            {"$set": {"status": status, "resolved_at": datetime.utcnow()}},
+            return_document=ReturnDocument.AFTER,
+        )
+
     async def commit_reservation(self, order_id: str) -> None:
         lines = await self._load_reservation(order_id)
+        from_mirror = None
         if not lines:
-            return
+            from_mirror = await self._resolve_durable_mirror(order_id, "committed")
+            if not from_mirror:
+                return
+            lines = [
+                ReservationLine(product_id=str(l["product_id"]), quantity=int(l["quantity"]))
+                for l in from_mirror["lines"]
+            ]
 
         for line in lines:
             if not await self._atomic_decrement(line.product_id, line.quantity):
@@ -207,7 +270,14 @@ class InventoryService:
                 )
                 raise ValueError(f"Insufficient stock for product {line.product_id}")
 
-        await self.release_reservation(order_id)
+        for line in lines:
+            await self._adjust_pending_qty(line.product_id, -line.quantity)
+        redis = await redis_client.get_client()
+        await redis.delete(self._reservation_key(order_id))
+        if from_mirror is None:
+            # Redis path succeeded — still resolve the durable mirror so
+            # reconcile_stale_reservations doesn't try to process it again.
+            await self._resolve_durable_mirror(order_id, "committed")
 
     async def commit_items(self, items: List[ValidatedOrderItem]) -> None:
         if not settings.inventory_enabled:
@@ -222,14 +292,23 @@ class InventoryService:
 
     async def release_reservation(self, order_id: str) -> None:
         lines = await self._load_reservation(order_id)
+        from_mirror = None
         if not lines:
-            return
+            from_mirror = await self._resolve_durable_mirror(order_id, "released")
+            if not from_mirror:
+                return
+            lines = [
+                ReservationLine(product_id=str(l["product_id"]), quantity=int(l["quantity"]))
+                for l in from_mirror["lines"]
+            ]
 
         for line in lines:
             await self._adjust_pending_qty(line.product_id, -line.quantity)
 
         redis = await redis_client.get_client()
         await redis.delete(self._reservation_key(order_id))
+        if from_mirror is None:
+            await self._resolve_durable_mirror(order_id, "released")
 
     async def reconcile_stale_reservations(self) -> int:
         redis = await redis_client.get_client()
@@ -242,5 +321,19 @@ class InventoryService:
                 continue
             order_id = key.removeprefix(self.RESERVATION_PREFIX)
             await self.release_reservation(order_id)
+            released += 1
+
+        # Redis SCAN above only sees keys that still exist. Once a
+        # reservation key's TTL (inventory_reservation_ttl_seconds) has
+        # fully expired, it's invisible to that loop even though its
+        # pending-quantity hold on stock was never released — this is
+        # exactly the leak the durable mirror exists to close. Sweep it for
+        # anything still "reserved" past when its Redis key should have
+        # expired.
+        database = await db.get_database()
+        collection = database[self.RESERVATIONS_COLLECTION]
+        cutoff = datetime.utcnow() - timedelta(seconds=self.reservation_ttl)
+        async for doc in collection.find({"status": "reserved", "created_at": {"$lt": cutoff}}):
+            await self.release_reservation(doc["order_id"])
             released += 1
         return released

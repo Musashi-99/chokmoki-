@@ -15,8 +15,15 @@ import httpx
 from src.config import settings
 from src.database.redis_connection import redis_client
 from src.plugins.logger import logger
+from src.resilience.circuit_breaker import CircuitBreaker
+from src.resilience.guarded import call_guarded
 
 BASE_URL = "https://apiv2.shiprocket.in/v1/external"
+# Shared across every ShiprocketClient instance in this process — the
+# breaker's own state actually lives in Redis (see circuit_breaker.py), so
+# this is really just a lightweight handle to that shared state, not
+# per-instance state itself.
+_BREAKER = CircuitBreaker("shiprocket", failure_threshold=5, failure_window_seconds=60, cooldown_seconds=30)
 TOKEN_CACHE_KEY = "shiprocket:token"
 # Shiprocket doesn't document a token TTL. Cache with a conservative soft
 # TTL for proactive refresh, and ALSO transparently re-login-and-retry-once
@@ -33,6 +40,14 @@ class ShiprocketAPIError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload
+
+
+class ShiprocketTransientError(ShiprocketAPIError):
+    """A 5xx from Shiprocket's own API — worth retrying, unlike a 4xx (bad
+    request, wrong pickup_location, etc.) which retrying would just delay.
+    Subclasses ShiprocketAPIError so existing `except ShiprocketAPIError`
+    call sites are unaffected.
+    """
 
 
 class ShiprocketNotConfiguredError(ShiprocketAPIError):
@@ -94,6 +109,53 @@ class ShiprocketClient:
         json: Optional[dict] = None,
         params: Optional[dict] = None,
     ) -> Any:
+        """Public entry point every endpoint method below calls — guarded
+        with a timeout+retry+circuit-breaker+bulkhead so a slow/failing
+        Shiprocket doesn't hang a request indefinitely or get hammered
+        during an outage. Only transient failures (network errors, our own
+        timeout, Shiprocket 5xx) are retried; a 4xx (bad request, wrong
+        pickup_location, etc.) raises immediately from _request_impl as a
+        plain ShiprocketAPIError, which is deliberately NOT in the retryable
+        set below — retrying "this specific request is wrong" would just
+        delay a real error.
+        """
+        try:
+            return await call_guarded(
+                dependency="shiprocket",
+                fn=lambda: self._request_impl(method, path, json=json, params=params),
+                breaker=_BREAKER,
+                # A bit more than REQUEST_TIMEOUT_SECONDS so _request_impl's
+                # own inner 401-refresh/429-backoff retry (up to one extra
+                # ~20s call plus a 2s sleep) has room to finish before we'd
+                # also time out.
+                timeout_seconds=REQUEST_TIMEOUT_SECONDS + 25.0,
+                bulkhead_limit=5,
+                retries=2,
+                retryable_exceptions=(
+                    ShiprocketTransientError,
+                    httpx.TimeoutException,
+                    httpx.ConnectError,
+                    httpx.ReadError,
+                ),
+            )
+        except ShiprocketAPIError:
+            raise
+        except Exception as e:
+            # CircuitBreakerOpenError / DependencyTimeoutError aren't
+            # ShiprocketAPIError subclasses — translate them so every
+            # existing `except ShiprocketAPIError` call site (admin routes
+            # mapping it to a clean 400) keeps working instead of falling
+            # through to a generic, unhelpful 500.
+            raise ShiprocketAPIError(f"Shiprocket request unavailable: {e}") from e
+
+    async def _request_impl(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[dict] = None,
+        params: Optional[dict] = None,
+    ) -> Any:
         token = await self._get_token()
         resp: Optional[httpx.Response] = None
 
@@ -118,7 +180,8 @@ class ShiprocketClient:
                 logger.error(
                     f"Shiprocket API error {method} {path}: {resp.status_code} {resp.text[:500]}"
                 )
-            raise ShiprocketAPIError(
+            error_cls = ShiprocketTransientError if resp.status_code >= 500 else ShiprocketAPIError
+            raise error_cls(
                 f"Shiprocket API error {resp.status_code}: {self._extract_error_message(body)}",
                 status_code=resp.status_code,
                 payload=body,

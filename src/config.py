@@ -1,3 +1,5 @@
+import sys
+
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
@@ -164,6 +166,39 @@ class Settings(BaseSettings):
         default=3600, env="INVENTORY_RESERVATION_TTL_SECONDS"
     )
 
+    # How often the worker process independently asks Razorpay for the true
+    # status of anything still stuck in pending_order:* Redis keys — the
+    # webhook-independent safety net for "payment succeeded but our webhook
+    # never arrived/never got processed" (Razorpay outage, misconfigured
+    # subscription, or an extended outage on our own webhook endpoint).
+    # 30 min default — the bulk GET /v1/payments pass already recovers
+    # everything with one API call per run regardless of interval, so this
+    # only trades off "how long a missed webhook stays unrecovered" against
+    # "how often we touch Razorpay's API at all"; 30 min is a comfortable
+    # margin under Razorpay's rate limit even during an outage.
+    payment_reconcile_interval_seconds: int = Field(
+        default=1800, env="PAYMENT_RECONCILE_INTERVAL_SECONDS"
+    )
+    # How far back a reconciliation run looks for still-unresolved payment
+    # attempts. Independent of inventory_reservation_ttl_seconds on purpose —
+    # that TTL exists to release reserved stock, not to bound how long we're
+    # willing to try recovering a missed webhook. A payment_attempts row
+    # outlives the Redis pending_order key, so this can safely be longer.
+    payment_reconcile_window_hours: int = Field(
+        default=2, env="PAYMENT_RECONCILE_WINDOW_HOURS"
+    )
+    # After the bulk GET /v1/payments pass, anything still unresolved (bulk
+    # fetch hit its page cap, or a payment settled right at the window edge)
+    # gets a per-order fallback check via GET /v1/orders/{id}/payments — but
+    # throttled, not all at once, so a large leftover set still can't spike
+    # Razorpay API usage: this many calls, then sleep, repeat.
+    payment_reconcile_fallback_batch_size: int = Field(
+        default=3, env="PAYMENT_RECONCILE_FALLBACK_BATCH_SIZE"
+    )
+    payment_reconcile_fallback_interval_seconds: int = Field(
+        default=60, env="PAYMENT_RECONCILE_FALLBACK_INTERVAL_SECONDS"
+    )
+
     # Fraud Detection
     fraud_enabled: bool = Field(default=False, env="FRAUD_ENABLED")
     fraud_fail_closed: bool = Field(default=False, env="FRAUD_FAIL_CLOSED")
@@ -253,6 +288,28 @@ class Settings(BaseSettings):
             raise ValueError(str(exc)) from exc
 
         if not self.is_production:
+            # Every strength/known-weak-secret check below is SKIPPED
+            # whenever ENVIRONMENT isn't exactly "production" — correct for
+            # genuine local dev, but a real deployment that simply forgot to
+            # set ENVIRONMENT=production would silently boot with insecure
+            # defaults (admin123, the placeholder JWT secret, etc.) and no
+            # error at all. Can't reliably tell "forgotten env var" apart
+            # from "genuine local dev" from in here, so: print a loud,
+            # impossible-to-miss warning on every non-production boot rather
+            # than silently proceeding either way. Plain print (not the
+            # app logger) — src/plugins/logger.py imports this module, so
+            # importing it here would be circular, and this needs to run
+            # before the logger even exists regardless.
+            print(
+                f"\n{'!' * 70}\n"
+                f"WARNING: ENVIRONMENT='{self.environment}', not 'production' — "
+                f"production security validation (secret strength, CORS, "
+                f"rate-limit fail-closed, etc.) is SKIPPED.\n"
+                f"If this is a real deployment, this is very likely a "
+                f"misconfiguration: set ENVIRONMENT=production.\n"
+                f"{'!' * 70}\n",
+                file=sys.stderr,
+            )
             return self
 
         errors: List[str] = collect_production_secret_errors(

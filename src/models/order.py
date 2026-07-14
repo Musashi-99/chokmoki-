@@ -158,6 +158,16 @@ class Order(BaseModel):
     ]] = None
     notes: List[Dict[str, Any]] = Field(default_factory=list)  # [{text, author_email, created_at}], append-only
 
+    # Tracks whether complete_pending_order()'s post-insert side effects
+    # (inventory commit, ledger, alert, fraud-mark, reconcile-resolve) fully
+    # finished — "pending"/"in_progress" means a crash interrupted them and
+    # the next call will retry just those, not the whole order. Absent/None
+    # on COD orders (created via create()/create_from_admin(), a different
+    # code path). post_processing_claimed_at supports reclaiming a stale
+    # "in_progress" claim if the original claimer itself crashed.
+    post_processing_status: Optional[Literal["pending", "in_progress", "done"]] = None
+    post_processing_claimed_at: Optional[datetime] = None
+
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,

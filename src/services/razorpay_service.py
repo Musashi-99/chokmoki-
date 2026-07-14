@@ -45,6 +45,73 @@ class RazorpayService:
         amount_paise = int(payment.get("amount") or 0)
         return amount_paise / 100.0
 
+    def fetch_payments_window(self, from_ts: int, to_ts: int, max_pages: int = 50) -> dict:
+        """Bulk-fetch every captured/authorized payment in [from_ts, to_ts]
+        (UNIX seconds) via GET /v1/payments, paginating count=100 at a time.
+
+        Used by PaymentReconciliationService instead of one GET /v1/payments
+        call per pending order — at any real volume, the number of pending
+        (not-yet-webhooked) orders is a tiny fraction of total payment volume,
+        so asking Razorpay once per pending order wastes API calls (and eats
+        into Razorpay's own rate limit) for no benefit over asking once for
+        "everything in this window" and matching locally.
+
+        Returns {"payments": {razorpay_order_id: {id, status, amount_inr}},
+        "pages_fetched": N, "raw_payments_seen": N, "hit_page_cap": bool} —
+        the payments dict only includes entries that have an order_id and a
+        captured/authorized status (entries without payment_capture, e.g.
+        failed attempts, are dropped since reconciliation only cares about
+        payments it needs to recover); the metadata is for the reconciliation
+        run's own metrics/consistency reporting, so "what the API actually
+        returned" is visible, not just "what we did with it."
+
+        max_pages caps pagination at 50 * 100 = 5000 payments per run as a
+        safety backstop against a runaway loop if Razorpay ever returned a
+        malformed "full page" indefinitely — logged loudly if hit, since
+        silently truncating here would silently drop recoverable orders.
+        """
+        payments: dict = {}
+        skip = 0
+        page_count = 0
+        raw_payments_seen = 0
+        hit_page_cap = False
+        while True:
+            page_count += 1
+            if page_count > max_pages:
+                hit_page_cap = True
+                logger.error(
+                    f"fetch_payments_window: hit max_pages={max_pages} cap "
+                    f"(from={from_ts} to={to_ts}) — window may have more "
+                    f"payments than were fetched; consider narrowing the window "
+                    f"or raising max_pages."
+                )
+                break
+            response = self.client.payment.all(
+                data={"from": from_ts, "to": to_ts, "count": 100, "skip": skip}
+            )
+            items = response.get("items", [])
+            raw_payments_seen += len(items)
+            for payment in items:
+                order_id = payment.get("order_id")
+                if not order_id:
+                    continue
+                if payment.get("status") not in ("captured", "authorized"):
+                    continue
+                payments[order_id] = {
+                    "id": payment.get("id"),
+                    "status": payment.get("status"),
+                    "amount_inr": int(payment.get("amount") or 0) / 100.0,
+                }
+            if len(items) < 100:
+                break
+            skip += 100
+        return {
+            "payments": payments,
+            "pages_fetched": page_count if not hit_page_cap else max_pages,
+            "raw_payments_seen": raw_payments_seen,
+            "hit_page_cap": hit_page_cap,
+        }
+
     def fetch_captured_payment(self, razorpay_order_id: str) -> Optional[dict]:
         """Return the captured/authorized payment for a Razorpay order, if any.
 

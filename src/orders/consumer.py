@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from src.orders.events import EVENT_PAYMENT_CAPTURED, ORDERS_STREAM_KEY
+from src.orders.events import EVENT_PAYMENT_CAPTURED, EVENT_SHIPMENT_UPDATE, ORDERS_STREAM_KEY
 from src.plugins.logger import logger
 from src.streams.consumer import MAX_DELIVERY_ATTEMPTS, StreamConsumer
 
@@ -24,6 +24,8 @@ class OrderEventConsumer:
     async def _dispatch(self, event_type: str, payload: Dict[str, Any]) -> None:
         if event_type == EVENT_PAYMENT_CAPTURED:
             await self._handle_payment_captured(payload)
+        elif event_type == EVENT_SHIPMENT_UPDATE:
+            await self._handle_shipment_update(payload)
         elif logger:
             logger.warning(f"OrderEventConsumer: unrecognized event type '{event_type}'")
 
@@ -68,12 +70,28 @@ class OrderEventConsumer:
 
         service = OrderService()
         _order, status = await service.complete_pending_order(
-            order_id, razorpay_order_id, razorpay_payment_id
+            order_id, razorpay_order_id, razorpay_payment_id, resolution_source="webhook"
         )
         if status == "not_found" and logger:
             logger.warning(
                 f"OrderEventConsumer: payment.captured for unknown/expired order {order_id}"
             )
+
+    async def _handle_shipment_update(self, payload: Dict[str, Any]) -> None:
+        """The actual Mongo write for a Shiprocket courier-update webhook —
+        moved here (off the API's request-handling event loop) so a
+        transient failure (e.g. a Mongo blip) gets our own retry/DLQ safety
+        net via StreamConsumer, instead of the single fire-and-forget
+        try/except the inline version had. Raising here is intentional and
+        safe: it's what makes this event redeliverable at all.
+        """
+        from src.services.shiprocket_service import ShiprocketService
+
+        order_id = payload.get("order_id")
+        service = ShiprocketService()
+        await service.handle_webhook(payload)
+        if logger:
+            logger.info(f"OrderEventConsumer: shipment.update processed for order_id={order_id}")
 
     async def run(self) -> None:
         await self._stream_consumer.run()

@@ -1,8 +1,14 @@
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 
 from src.config import settings
 from src.plugins.logger import logger
+from src.resilience.circuit_breaker import CircuitBreaker
+from src.resilience.guarded import call_guarded
+
+TELEGRAM_BREAKER = CircuitBreaker(
+    "telegram", failure_threshold=5, failure_window_seconds=60, cooldown_seconds=30
+)
 
 
 class TelegramService:
@@ -20,11 +26,19 @@ class TelegramService:
         return True
 
     async def send_message(self, text: str) -> bool:
-        """Send message to Telegram using python-telegram-bot SDK"""
+        """Send message to Telegram using python-telegram-bot SDK. Never
+        raises — a lost alert is genuinely low-stakes (unlike a lost
+        payment/shipment event), so the public contract stays "return False
+        on any failure" exactly as before; timeout/retry/breaker/bulkhead
+        are added underneath without changing that contract. A retried send
+        that actually succeeded the first time just means a duplicate
+        Telegram message — an acceptable, low-severity tradeoff for not
+        losing the notification.
+        """
         if not self.is_enabled():
             return False
 
-        try:
+        async def _send() -> bool:
             bot = Bot(token=settings.telegram_bot_token)
             await bot.send_message(
                 chat_id=settings.telegram_chat_id,
@@ -33,6 +47,17 @@ class TelegramService:
                 disable_web_page_preview=False,
             )
             return True
+
+        try:
+            return await call_guarded(
+                dependency="telegram",
+                fn=_send,
+                breaker=TELEGRAM_BREAKER,
+                timeout_seconds=10.0,
+                bulkhead_limit=5,
+                retries=2,
+                retryable_exceptions=(NetworkError, TimedOut, RetryAfter),
+            )
         except TelegramError as e:
             if logger:
                 logger.error(f"Telegram API error: {e}")

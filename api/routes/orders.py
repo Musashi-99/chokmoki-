@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import json
 from api.bootstrap import (
     EVENT_PAYMENT_CAPTURED,
+    EVENT_SHIPMENT_UPDATE,
     OrderCreateInput,
     OrderService,
     RazorpayService,
@@ -306,6 +307,7 @@ async def razorpay_webhook(
                         "razorpay_order_id": razorpay_order_id,
                         "razorpay_payment_id": razorpay_payment_id,
                     },
+                    correlation_id=getattr(request.state, "correlation_id", None),
                 )
             return JSONResponse(content={"status": "accepted", "order_id": order_id})
 
@@ -403,12 +405,29 @@ async def shiprocket_webhook(request: Request, x_api_key: Optional[str] = Header
             f"awb={body.get('awb')} scans_count={len(body.get('scans') or [])}"
         )
 
-    try:
-        await service.handle_webhook(body)
-        if logger:
-            logger.info(f"Shiprocket webhook processed successfully for order_id={body.get('order_id')}")
-    except Exception as e:
-        if logger:
-            logger.exception(f"Shiprocket webhook processing error for order_id={body.get('order_id')}: {e}")
+    # Durable, crash-safe processing — same pattern as the Razorpay webhook
+    # above: verify (already done, synchronous) then XADD and return 200
+    # immediately. The actual Mongo write (ShiprocketService.handle_webhook)
+    # happens in src/orders/consumer.py via XREADGROUP; a transient failure
+    # gets XAUTOCLAIM-redelivered instead of just being logged and dropped.
+    # Shiprocket itself always sees 200 regardless (their delivery system
+    # requires it — see the module docstring above), so this doesn't win a
+    # Shiprocket-side retry; it wins OUR OWN retry/DLQ safety net for
+    # whatever their webhook actually contained.
+    if publish_order_event is not None:
+        await publish_order_event(
+            EVENT_SHIPMENT_UPDATE, body, correlation_id=getattr(request.state, "correlation_id", None)
+        )
+    else:
+        # publish_order_event failed to import at boot (see api/bootstrap.py) —
+        # fall back to the old inline path rather than silently dropping
+        # every shipment update.
+        try:
+            await service.handle_webhook(body)
+        except Exception as e:
+            if logger:
+                logger.exception(
+                    f"Shiprocket webhook processing error for order_id={body.get('order_id')}: {e}"
+                )
 
     return JSONResponse(content={"status": "ok"})

@@ -1,8 +1,11 @@
 from typing import Any, Dict, List, Optional
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timedelta
+from pymongo import ReturnDocument
+import asyncio
 import uuid
 import json
+import razorpay.errors
 from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder
@@ -16,9 +19,19 @@ from src.services import order_ledger
 from src.config import settings
 from src.plugins.logger import logger
 from src.fraud.models import FraudAction, FraudContext
+from src.fraud.enrichment import FraudEnrichmentService
 from src.services.fraud_detection_service import FraudDetectionService
+from src.services.payment_reconciliation_service import PaymentReconciliationService
+from src.resilience.circuit_breaker import CircuitBreaker
+from src.resilience.guarded import call_guarded
 from src.utils.regex_safe import escape_mongo_regex
 from src.security.mongo_safe import coerce_safe_string
+
+# Shared breaker state (lives in Redis — see circuit_breaker.py) for every
+# outbound Razorpay call made from this service.
+RAZORPAY_BREAKER = CircuitBreaker(
+    "razorpay", failure_threshold=5, failure_window_seconds=60, cooldown_seconds=30
+)
 
 # Optional alerts import
 try:
@@ -70,11 +83,112 @@ class OrderService:
         redis = await redis_client.get_client()
         await redis.delete(f"pending_order:{order_id}")
 
+    # A claim older than this is assumed abandoned (the claimer crashed
+    # before finishing) and can be reclaimed by the next caller — otherwise a
+    # crash mid-claim would leave the order stuck exactly like the original
+    # bug this whole mechanism exists to fix, just one state later.
+    POST_PROCESSING_STALE_CLAIM_SECONDS = 300
+
+    async def _finish_post_processing(
+        self,
+        order_id: str,
+        saved: dict,
+        raw_order_log: dict,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+        resolution_source: str,
+    ) -> dict:
+        """Runs (or re-runs) complete_pending_order()'s side effects — inventory
+        commit, the one-shot order_logs snapshot, ledger entries, the Telegram
+        alert, fraud-mark, reconcile-resolve — and only if they haven't
+        already fully finished.
+
+        Only re-runs when status is "pending" or a stale "in_progress" — not
+        just "not done". Orders written before this field existed have it
+        absent entirely (None), and were already fully processed by the code
+        that existed at the time; treating "missing" as "needs repair" would
+        replay ledger entries and alerts for every old, already-settled order
+        the first time this new code touches it. Only new code ever writes
+        "pending"/"in_progress", so only genuinely-interrupted runs match.
+
+        The claim itself (`find_one_and_update` below) is atomic and is what
+        makes it safe to gate the one-time actions (ledger append, alert) on
+        post_processing_status at all: two callers racing on the same order
+        (webhook + client-verify, or two reconcile passes) can't both pass
+        the claim and both replay the ledger — only one `find_one_and_update`
+        can match+flip "pending" -> "in_progress"; the loser sees no match
+        and returns the current doc untouched. inventory commit / fraud-mark
+        / reconcile-resolve / the log snapshot are each independently
+        idempotent too, so even a stale-claim reclaim after a genuine crash
+        can't double-apply their effects.
+        """
+        if saved.get("post_processing_status") not in ("pending", "in_progress"):
+            return saved
+
+        database = await db.get_database()
+        orders_collection = database[self.COLLECTION_NAME]
+        logs_collection = database[self.ORDER_LOGS_COLLECTION]
+
+        now = datetime.utcnow()
+        stale_cutoff = now - timedelta(seconds=self.POST_PROCESSING_STALE_CLAIM_SECONDS)
+        claimed = await orders_collection.find_one_and_update(
+            {
+                "order_id": order_id,
+                "$or": [
+                    {"post_processing_status": "pending"},
+                    {
+                        "post_processing_status": "in_progress",
+                        "post_processing_claimed_at": {"$lt": stale_cutoff},
+                    },
+                ],
+            },
+            {"$set": {"post_processing_status": "in_progress", "post_processing_claimed_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if claimed is None:
+            # Another caller already claimed it (and hasn't gone stale) or
+            # it finished in the moment between our read and this update —
+            # don't duplicate their work, just report the current state.
+            current = await orders_collection.find_one({"order_id": order_id})
+            return current or saved
+
+        inventory_service = InventoryService()
+        await inventory_service.commit_reservation(order_id)
+        log_dict = {
+            "order_id": order_id,
+            "raw_data": raw_order_log,
+            "created_at": datetime.utcnow(),
+        }
+        await logs_collection.update_one(
+            {"order_id": order_id}, {"$setOnInsert": log_dict}, upsert=True
+        )
+        if publish_alert:
+            await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(claimed))
+        await order_ledger.append_event(
+            order_id, "order_created", "customer",
+            {"payment_method": "razorpay", "total_amount": claimed.get("total_amount")},
+        )
+        await order_ledger.append_event(
+            order_id, "payment_captured", "system",
+            {"razorpay_order_id": razorpay_order_id, "razorpay_payment_id": razorpay_payment_id},
+        )
+        await FraudEnrichmentService.mark_order_completed(
+            email=(claimed.get("user_email") or "").strip().lower(),
+            payload={"items": claimed.get("items") or []},
+        )
+        await PaymentReconciliationService().mark_resolved(order_id=order_id, source=resolution_source)
+        await orders_collection.update_one(
+            {"order_id": order_id}, {"$set": {"post_processing_status": "done"}}
+        )
+        claimed["post_processing_status"] = "done"
+        return claimed
+
     async def complete_pending_order(
         self,
         order_id: str,
         razorpay_order_id: str,
         razorpay_payment_id: str,
+        resolution_source: str = "webhook",
     ) -> tuple[Optional[Order], str]:
         """
         Atomically persist a paid order from Redis to MongoDB.
@@ -82,10 +196,17 @@ class OrderService:
         """
         database = await db.get_database()
         orders_collection = database[self.COLLECTION_NAME]
-        logs_collection = database[self.ORDER_LOGS_COLLECTION]
 
         existing = await orders_collection.find_one({"order_id": order_id})
         if existing:
+            # Found already — but if a previous call's post-processing (inventory
+            # commit, ledger, alert, reconcile-resolve) crashed partway through,
+            # returning immediately here would leave it stuck like that forever.
+            # Finish it before returning, not just on the fresh-insert path below.
+            existing = await self._finish_post_processing(
+                order_id, existing, existing.get("raw_order_log", {}),
+                razorpay_order_id, razorpay_payment_id, resolution_source,
+            )
             await self._clear_pending_redis(order_id)
             return self._order_from_doc(existing), "existing"
 
@@ -95,22 +216,58 @@ class OrderService:
         if not order_json:
             existing = await orders_collection.find_one({"order_id": order_id})
             if existing:
+                existing = await self._finish_post_processing(
+                    order_id, existing, existing.get("raw_order_log", {}),
+                    razorpay_order_id, razorpay_payment_id, resolution_source,
+                )
                 return self._order_from_doc(existing), "existing"
-            return None, "not_found"
-
-        order_dict = json.loads(order_json)
+            # Redis's pending_order key has a shorter TTL
+            # (inventory_reservation_ttl_seconds, 1h default) than the payment
+            # reconciliation window (2h default) — fall back to the durable
+            # snapshot recorded at initiate_order() time so a late-arriving
+            # webhook or reconciliation pass can still recover the order.
+            attempt = await PaymentReconciliationService().get_attempt(order_id)
+            snapshot = attempt.get("order_snapshot") if attempt else None
+            if not snapshot:
+                return None, "not_found"
+            order_dict = dict(snapshot)
+        else:
+            order_dict = json.loads(order_json)
         expected_total = float(order_dict.get("total_amount") or 0)
         if razorpay_payment_id:
             razorpay_service = RazorpayService()
-            if not razorpay_service.verify_payment_amount(
-                razorpay_payment_id, expected_total
-            ):
+            # razorpay.Client is a blocking/synchronous HTTP client — offload
+            # to a thread so this never stalls the event loop this coroutine
+            # runs on (the worker's, when called from the webhook consumer;
+            # the API's request-serving loop otherwise). Wrapped with
+            # timeout+retry+breaker+bulkhead since this is a read-only GET —
+            # safe to retry on transient failures, unlike create_order below.
+            amount_ok = await call_guarded(
+                dependency="razorpay",
+                fn=lambda: asyncio.to_thread(
+                    razorpay_service.verify_payment_amount, razorpay_payment_id, expected_total
+                ),
+                breaker=RAZORPAY_BREAKER,
+                timeout_seconds=15.0,
+                bulkhead_limit=10,
+                retries=2,
+                retryable_exceptions=(razorpay.errors.ServerError, razorpay.errors.GatewayError),
+            )
+            if not amount_ok:
                 raise ValueError("Payment amount does not match order total")
 
         order_dict["payment_status"] = "completed"
         order_dict["razorpay_order_id"] = razorpay_order_id
         order_dict["razorpay_payment_id"] = razorpay_payment_id
         order_dict["created_at"] = datetime.fromisoformat(order_dict["created_at"])
+        # Tracks whether _finish_post_processing's side effects actually
+        # completed. Without this, a crash between the upsert succeeding and
+        # those side effects finishing left the order permanently stuck: the
+        # *next* call found it via the `existing` fast path above and used to
+        # return immediately, never re-attempting inventory commit — a
+        # silent, permanent oversell. Now both `existing` branches above also
+        # check it.
+        order_dict["post_processing_status"] = "pending"
         order_dict.pop("_id", None)
 
         result = await orders_collection.update_one(
@@ -124,29 +281,10 @@ class OrderService:
         if not saved:
             return None, "not_found"
 
-        if created:
-            inventory_service = InventoryService()
-            await inventory_service.commit_reservation(order_id)
-            log_dict = {
-                "order_id": order_id,
-                "raw_data": order_dict.get("raw_order_log", {}),
-                "created_at": datetime.utcnow(),
-            }
-            await logs_collection.update_one(
-                {"order_id": order_id},
-                {"$setOnInsert": log_dict},
-                upsert=True,
-            )
-            if publish_alert:
-                await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(saved))
-            await order_ledger.append_event(
-                order_id, "order_created", "customer",
-                {"payment_method": "razorpay", "total_amount": order_dict.get("total_amount")},
-            )
-            await order_ledger.append_event(
-                order_id, "payment_captured", "system",
-                {"razorpay_order_id": razorpay_order_id, "razorpay_payment_id": razorpay_payment_id},
-            )
+        saved = await self._finish_post_processing(
+            order_id, saved, order_dict.get("raw_order_log", {}),
+            razorpay_order_id, razorpay_payment_id, resolution_source,
+        )
 
         await self._clear_pending_redis(order_id)
         status = "created" if created else "existing"
@@ -205,7 +343,17 @@ class OrderService:
                 continue
 
             checked += 1
-            payment = razorpay_service.fetch_captured_payment(razorpay_order_id)
+            payment = await call_guarded(
+                dependency="razorpay",
+                fn=lambda rzp_id=razorpay_order_id: asyncio.to_thread(
+                    razorpay_service.fetch_captured_payment, rzp_id
+                ),
+                breaker=RAZORPAY_BREAKER,
+                timeout_seconds=15.0,
+                bulkhead_limit=10,
+                retries=2,
+                retryable_exceptions=(razorpay.errors.ServerError, razorpay.errors.GatewayError),
+            )
             if not payment:
                 still_pending += 1
                 continue
@@ -385,6 +533,13 @@ class OrderService:
         await order_ledger.append_event(
             order_id, "order_created", "customer",
             {"payment_method": order_dict["payment_method"], "total_amount": order_dict["total_amount"]},
+        )
+        # Only mark this exact cart (email+items) as "genuinely purchased"
+        # now that it actually succeeded — see enrichment.py's
+        # _duplicate_order_flag for why this must not happen on every attempt.
+        await FraudEnrichmentService.mark_order_completed(
+            email=order_data.userEmail.strip().lower(),
+            payload={"items": [item.model_dump() for item in order_data.items]},
         )
 
         logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
@@ -881,9 +1036,26 @@ class OrderService:
         )
         
         razorpay_service = RazorpayService()
-        razorpay_order = razorpay_service.create_order(
-            amount=pricing.total,
-            notes={"order_id": order_id, "user_email": order_data.userEmail}
+        # Blocking/synchronous HTTP call — offload to a thread so a slow
+        # Razorpay API response can't stall the API process's event loop,
+        # which is shared by every other in-flight request. Deliberately
+        # retries=0: create_order is NOT idempotent on Razorpay's side (no
+        # idempotency key passed), so blindly retrying a slow-but-actually-
+        # successful call risks creating two real Razorpay orders for one
+        # checkout. Timeout+breaker+bulkhead still apply — a hung/failing
+        # Razorpay fails fast instead of hanging the request or piling up
+        # threads, it just doesn't get retried here.
+        razorpay_order = await call_guarded(
+            dependency="razorpay",
+            fn=lambda: asyncio.to_thread(
+                razorpay_service.create_order,
+                amount=pricing.total,
+                notes={"order_id": order_id, "user_email": order_data.userEmail},
+            ),
+            breaker=RAZORPAY_BREAKER,
+            timeout_seconds=15.0,
+            bulkhead_limit=10,
+            retries=0,
         )
 
         # F-13: persist the Razorpay order id into the pending record so the
@@ -896,6 +1068,15 @@ class OrderService:
         await order_ledger.append_event(
             order_id, "payment_initiated", "customer",
             {"razorpay_order_id": razorpay_order.id, "amount": pricing.total},
+        )
+        # Durable, time-queryable record independent of the Redis
+        # pending_order key's TTL — see PaymentReconciliationService.
+        await PaymentReconciliationService().record_attempt(
+            order_id=order_id,
+            razorpay_order_id=razorpay_order.id,
+            user_email=order_data.userEmail,
+            total_amount=pricing.total,
+            order_snapshot=json.loads(json.dumps(order_dict, default=str)),
         )
 
         return OrderInitiateResponseDTO(
@@ -921,7 +1102,7 @@ class OrderService:
             raise ValueError("Invalid payment signature")
 
         order, status = await self.complete_pending_order(
-            order_id, razorpay_order_id, razorpay_payment_id
+            order_id, razorpay_order_id, razorpay_payment_id, resolution_source="client_verify"
         )
         if status == "not_found":
             raise ValueError(f"Order {order_id} not found in Redis")
