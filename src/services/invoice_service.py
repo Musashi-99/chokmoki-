@@ -32,6 +32,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from src.config import settings
@@ -242,6 +243,36 @@ class InvoiceService:
         addr = order_doc.get("shipping_address") or {}
         col_w = (page_w - 2 * margin) / 3
 
+        def wrap_to_width(text: str, max_width: float, font: str = "Helvetica", size: float = 8) -> List[str]:
+            """Wrap by measured width, never by silently cutting characters —
+            a truncated order id on a legal document reads as a DIFFERENT id
+            (confirmed live: the PDF printed 'f394ec0d-…-9449' while every
+            other surface — Shiprocket invoice, label, alerts — showed the
+            full '…-9449-1b3e18421764'). Long unbreakable tokens (UUIDs)
+            split mid-token onto continuation lines instead.
+            """
+            segments: List[str] = []
+            for word in text.split(" "):
+                current = segments.pop() if segments else ""
+                candidate = f"{current} {word}".strip()
+                if stringWidth(candidate, font, size) <= max_width:
+                    segments.append(candidate)
+                    continue
+                if current:
+                    segments.append(current)
+                # Word alone may still be too wide (e.g. a 36-char UUID) —
+                # split it by characters at the measured limit.
+                chunk = ""
+                for ch in word:
+                    if stringWidth(chunk + ch, font, size) > max_width:
+                        segments.append(chunk)
+                        chunk = ch
+                    else:
+                        chunk += ch
+                if chunk:
+                    segments.append(chunk)
+            return segments or [""]
+
         def block(x: float, top: float, title: str, lines: List[str]) -> float:
             c.setFont("Helvetica-Bold", 8.5)
             c.setFillColor(ink)
@@ -250,8 +281,10 @@ class InvoiceService:
             c.setFont("Helvetica", 8)
             c.setFillColor(muted)
             for line in lines:
-                if line:
-                    c.drawString(x, yy, line[:48])
+                if not line:
+                    continue
+                for segment in wrap_to_width(line, col_w - 4 * mm):
+                    c.drawString(x, yy, segment)
                     yy -= 3.8 * mm
             return yy
 
@@ -278,7 +311,7 @@ class InvoiceService:
         detail_lines = [
             f"No.: {invoice_number}",
             f"Date: {invoice_date.strftime('%d/%m/%Y')}",
-            f"Order: {order_doc.get('order_id', '')[:23]}",
+            f"Order: {order_doc.get('order_id', '')}",
             f"Order Date: {order_date_str}",
             f"Payment: {(order_doc.get('payment_method') or '').upper()}",
             f"AWB: {order_doc.get('awb_code')}" if order_doc.get("awb_code") else "",
