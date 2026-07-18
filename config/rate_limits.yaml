@@ -169,6 +169,20 @@ rules:
         window: 1m
         burst: 600
 
+  # Public media proxy (R2 images served through our own domain). A first
+  # page view loads dozens of images at once and objects are immutable-cached
+  # after that, so this needs a much higher burst than ordinary GETs — the
+  # volume cap only exists to stop scripted mass-downloading.
+  - id: media
+    match:
+      methods: [GET]
+      paths: [/media/*]
+    buckets:
+      - scope: ip
+        rate: 3000
+        window: 1m
+        burst: 1000
+
   - id: public_get
     match:
       methods: [GET]
