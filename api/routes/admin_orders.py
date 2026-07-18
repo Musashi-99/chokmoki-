@@ -136,6 +136,49 @@ async def admin_get_order_events(order_id: str, email: str = Depends(require_adm
     return {"data": events}
 
 
+@router.get("/api/admin/orders/{order_id}/invoice.pdf")
+async def admin_order_invoice_pdf(
+    order_id: str,
+    doc_type: str = "tax_invoice",
+    email: str = Depends(require_admin),
+):
+    """Branded GST document PDF, generated lazily on request — tax_invoice
+    (default), receipt, or bill_of_supply. The invoice number is assigned
+    atomically on first generation and reused forever after; the PDF itself
+    is rebuilt per request (pure function of order + config, nothing to
+    store). reportlab is CPU-bound, so it runs in a thread — a big PDF can
+    never stall the request-serving event loop.
+    """
+    import asyncio
+
+    from fastapi.responses import Response
+    from src.services.invoice_service import DOC_TITLES, InvoiceService
+
+    if doc_type not in DOC_TITLES:
+        raise HTTPException(status_code=400, detail=f"doc_type must be one of {sorted(DOC_TITLES)}")
+
+    database = await db.get_database()
+    order_doc = await database["orders"].find_one({"order_id": order_id})
+    if not order_doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    service = InvoiceService()
+    invoice_number, invoice_date = await service.get_or_assign_invoice_number(order_id)
+    pdf_bytes = await asyncio.to_thread(
+        service.build_pdf,
+        order_doc,
+        doc_type=doc_type,
+        invoice_number=invoice_number,
+        invoice_date=invoice_date,
+    )
+    filename = f"{DOC_TITLES[doc_type].title().replace(' ', '_')}_{invoice_number}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @router.post("/api/admin/orders/{order_id}/notes")
 async def admin_add_order_note(
     order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)

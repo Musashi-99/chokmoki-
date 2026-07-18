@@ -116,6 +116,69 @@ class Settings(BaseSettings):
         default="cheapest", env="SHIPROCKET_DEFAULT_COURIER_SELECTION"
     )
 
+    # GST — tax display on invoices, NOT a price change. Storefront prices
+    # are already GST-inclusive; these rates only tell Shiprocket how to
+    # back-calculate the taxable value + tax split shown on the invoice it
+    # generates (selling_price is documented "Inclusive of GST" in their
+    # API). CGST/SGST vs IGST is Shiprocket's decision at invoice time,
+    # based on pickup state vs place of supply — we only send the TOTAL
+    # rate (cgst + sgst) per order item via the `tax` field; the split
+    # config exists so the rate is expressed the same way it appears on the
+    # invoice (1.5% + 1.5% = 3%, the rate for jewellery, HSN 7113).
+    gst_enabled: bool = Field(default=True, env="GST_ENABLED")
+    gst_cgst_percent: float = Field(default=1.5, env="GST_CGST_PERCENT")
+    gst_sgst_percent: float = Field(default=1.5, env="GST_SGST_PERCENT")
+    # Sterling silver jewellery = HSN 7113 (articles of jewellery of
+    # precious metal). Confirm against your actual product classification —
+    # imitation/fashion jewellery would be 7117 instead.
+    gst_hsn_code: str = Field(default="7113", env="GST_HSN_CODE")
+
+    @property
+    def gst_total_percent(self) -> float:
+        return self.gst_cgst_percent + self.gst_sgst_percent
+
+    @property
+    def gst_config(self) -> dict:
+        """Shaped for API/frontend consumption: {generic: {cgst, sgst}}."""
+        return {
+            "enabled": self.gst_enabled,
+            "generic": {
+                "cgst": self.gst_cgst_percent,
+                "sgst": self.gst_sgst_percent,
+            },
+            "total_percent": self.gst_total_percent,
+            "hsn_code": self.gst_hsn_code,
+        }
+
+    # Invoice PDF generation (src/services/invoice_service.py) — the seller
+    # ("Sold By") block printed on every generated document. Defaults match
+    # the registered business details already configured in Shiprocket, so
+    # our own invoices and Shiprocket's agree; override via env if any of
+    # this changes. invoice_seller_state is what decides CGST+SGST
+    # (customer in the same state) vs IGST (different state).
+    invoice_brand_name: str = Field(default="Chokmoki", env="INVOICE_BRAND_NAME")
+    invoice_brand_tagline: str = Field(
+        default="Let the sparkle begin", env="INVOICE_BRAND_TAGLINE"
+    )
+    invoice_seller_name: str = Field(default="SUPRAR LLP", env="INVOICE_SELLER_NAME")
+    invoice_seller_address1: str = Field(
+        default="Shop No 12, 400/401 SV Road, 3rd Lane", env="INVOICE_SELLER_ADDRESS1"
+    )
+    invoice_seller_address2: str = Field(
+        default="Lp-17/3/3/1 North 24 Parganas", env="INVOICE_SELLER_ADDRESS2"
+    )
+    invoice_seller_city: str = Field(default="North 24 Parganas", env="INVOICE_SELLER_CITY")
+    invoice_seller_pincode: str = Field(default="700051", env="INVOICE_SELLER_PINCODE")
+    invoice_seller_state: str = Field(default="West Bengal", env="INVOICE_SELLER_STATE")
+    invoice_seller_state_code: str = Field(default="19", env="INVOICE_SELLER_STATE_CODE")
+    invoice_seller_gstin: str = Field(default="19AETFS6652P1ZR", env="INVOICE_SELLER_GSTIN")
+    invoice_seller_phone: str = Field(default="8981425898", env="INVOICE_SELLER_PHONE")
+    invoice_seller_email: str = Field(
+        default="sandip.tulsyan@gmail.com", env="INVOICE_SELLER_EMAIL"
+    )
+    invoice_number_prefix: str = Field(default="INV", env="INVOICE_NUMBER_PREFIX")
+    invoice_logo_path: str = Field(default="assets/chokmoki_logo.jpg", env="INVOICE_LOGO_PATH")
+
     # R2 / S3
     r2_account_id: str = Field(default="", env="R2_ACCOUNT_ID")
     r2_access_key_id: str = Field(default="", env="R2_ACCESS_KEY_ID")

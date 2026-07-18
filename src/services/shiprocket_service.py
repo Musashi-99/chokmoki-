@@ -282,6 +282,16 @@ class ShiprocketService:
         height = max_height or settings.shiprocket_default_height_cm
         return weight_kg, length, breadth, height
 
+    @staticmethod
+    def _gst_rate_value():
+        """Total GST % (cgst + sgst) for the order-item `tax` field.
+        Shiprocket documents `tax` as an integer, so send a clean int when
+        the total is whole (3.0 -> 3) and only fall back to the float for
+        a genuinely fractional configured rate.
+        """
+        total = settings.gst_total_percent
+        return int(total) if float(total).is_integer() else total
+
     def _build_create_order_payload(
         self, order_doc: Dict[str, Any], weight_kg: float, length_cm: float, breadth_cm: float, height_cm: float
     ) -> Dict[str, Any]:
@@ -308,12 +318,29 @@ class ShiprocketService:
             "billing_email": addr.get("email") or order_doc.get("user_email", ""),
             "billing_phone": addr.get("phone", ""),
             "shipping_is_billing": True,
+            # `selling_price` is GST-INCLUSIVE (per Shiprocket's API docs) —
+            # exactly how our storefront prices work. Passing `tax` (the
+            # total GST %) and `hsn` is what makes Shiprocket's generated
+            # invoice back-calculate the taxable value and show the
+            # CGST/SGST (intra-state) or IGST (inter-state) split instead
+            # of 0.00 | 0.00; without them the invoice legally shows no tax
+            # collected at all. The intra/inter split itself is decided by
+            # Shiprocket from pickup state vs place of supply — we only
+            # supply the rate.
             "order_items": [
                 {
                     "name": item.get("product_name", "Item"),
                     "sku": item.get("product_id", "SKU"),
                     "units": item.get("quantity", 1),
                     "selling_price": item.get("unit_price", 0),
+                    **(
+                        {
+                            "tax": self._gst_rate_value(),
+                            "hsn": settings.gst_hsn_code,
+                        }
+                        if settings.gst_enabled
+                        else {}
+                    ),
                 }
                 for item in order_doc.get("items", [])
             ],

@@ -168,6 +168,12 @@ class Order(BaseModel):
     post_processing_status: Optional[Literal["pending", "in_progress", "done"]] = None
     post_processing_claimed_at: Optional[datetime] = None
 
+    # Assigned exactly once, on first invoice-PDF generation (atomic counter,
+    # src/services/invoice_service.py) — GST invoice numbers must be unique,
+    # sequential, and immutable once issued.
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[datetime] = None
+
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,
