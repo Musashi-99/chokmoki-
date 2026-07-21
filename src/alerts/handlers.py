@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.alerts.chain import AlertEvent, AlertHandler
-from src.alerts.channels import NotificationChannel
+from src.alerts.channels import NotificationChannel, SmsChannel
 from src.alerts.events import (
     EVENT_ADMIN_MUTATION,
     EVENT_CONTACT_SUBMITTED,
@@ -135,15 +135,45 @@ def _format_shipment_alert(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def _send_lifecycle_sms(
+    sms_channel: Optional[SmsChannel], template_key: str, payload: Dict[str, Any]
+) -> None:
+    """Best-effort, independent of the Telegram channel's outcome — a
+    failed/skipped SMS must never raise (that would trigger the stream
+    consumer's Telegram-oriented retry logic for an unrelated channel).
+    """
+    if not sms_channel or not sms_channel.is_enabled():
+        return
+    phone = payload.get("customer_phone") or ""
+    if not phone:
+        if logger:
+            logger.info(f"Lifecycle SMS '{template_key}' skipped: no customer phone on payload")
+        return
+    try:
+        await sms_channel.send(
+            phone,
+            template_key,
+            {
+                "order_id": payload.get("order_id", ""),
+                "customer_name": payload.get("customer_name", ""),
+            },
+        )
+    except Exception as e:
+        if logger:
+            logger.error(f"Lifecycle SMS '{template_key}' failed for order {payload.get('order_id')}: {e}")
+
+
 class OrderCreatedHandler(AlertHandler):
-    def __init__(self, channel: NotificationChannel) -> None:
+    def __init__(self, channel: NotificationChannel, sms_channel: Optional[SmsChannel] = None) -> None:
         super().__init__()
         self._channel = channel
+        self._sms_channel = sms_channel
 
     async def _can_handle(self, event: AlertEvent) -> bool:
         return event.type == EVENT_ORDER_CREATED
 
     async def _process(self, event: AlertEvent) -> bool:
+        await _send_lifecycle_sms(self._sms_channel, "order_placed", event.payload)
         sent = await self._channel.send(_format_order_alert(event.payload))
         if not sent:
             raise RuntimeError("Order alert channel send failed")
@@ -210,15 +240,32 @@ class NewsletterSubscribedHandler(AlertHandler):
         return True
 
 
+# shipment_status (src/models/order.py) -> sms_templates key. Statuses not
+# listed here (pending/awb_assigned/pickup_scheduled/in_transit/
+# rto_delivered/cancellation_requested/failed) don't have a distinct
+# customer-facing SMS — intermediate/internal states, not worth a text.
+SHIPMENT_STATUS_SMS_KEY = {
+    "picked_up": "order_shipped",
+    "out_for_delivery": "order_out_for_delivery",
+    "delivered": "order_delivered",
+    "cancelled": "order_cancelled",
+    "rto_initiated": "order_cancelled",
+}
+
+
 class ShipmentUpdateHandler(AlertHandler):
-    def __init__(self, channel: NotificationChannel) -> None:
+    def __init__(self, channel: NotificationChannel, sms_channel: Optional[SmsChannel] = None) -> None:
         super().__init__()
         self._channel = channel
+        self._sms_channel = sms_channel
 
     async def _can_handle(self, event: AlertEvent) -> bool:
         return event.type == EVENT_SHIPMENT_UPDATE
 
     async def _process(self, event: AlertEvent) -> bool:
+        sms_key = SHIPMENT_STATUS_SMS_KEY.get(event.payload.get("status"))
+        if sms_key:
+            await _send_lifecycle_sms(self._sms_channel, sms_key, event.payload)
         sent = await self._channel.send(_format_shipment_alert(event.payload))
         if not sent:
             raise RuntimeError("Shipment alert channel send failed")
@@ -273,12 +320,12 @@ class FallbackHandler(AlertHandler):
         return True
 
 
-def build_chain(channel: NotificationChannel) -> AlertHandler:
-    order_handler = OrderCreatedHandler(channel)
+def build_chain(channel: NotificationChannel, sms_channel: Optional[SmsChannel] = None) -> AlertHandler:
+    order_handler = OrderCreatedHandler(channel, sms_channel)
     price_handler = PriceChangedHandler(channel)
     contact_handler = ContactSubmittedHandler(channel)
     newsletter_handler = NewsletterSubscribedHandler(channel)
-    shipment_handler = ShipmentUpdateHandler(channel)
+    shipment_handler = ShipmentUpdateHandler(channel, sms_channel)
     settings_handler = SettingsChangedHandler(channel)
     system_error_handler = SystemErrorHandler(channel)
     fallback_handler = FallbackHandler()

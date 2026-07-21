@@ -88,6 +88,37 @@ class Settings(BaseSettings):
         default="https://lowkey-ui.vercel.app/product", env="TELEGRAM_PRODUCT_BASE_URL"
     )
 
+    # MSG91 — customer OTP login + lifecycle SMS notifications. Secrets/
+    # toggle are env-backed (like Telegram); per-event template IDs are
+    # NOT here — they're admin-editable rows in the `sms_templates` Mongo
+    # collection (src/services/sms_template_service.py) so a new template
+    # can be wired up from the admin panel without a redeploy.
+    msg91_enabled: bool = Field(default=False, env="MSG91_ENABLED")
+    msg91_auth_key: Optional[str] = Field(default=None, env="MSG91_AUTH_KEY")
+    msg91_sender_id: Optional[str] = Field(default=None, env="MSG91_SENDER_ID")
+    msg91_base_url: str = Field(default="https://control.msg91.com/api/v5", env="MSG91_BASE_URL")
+    msg91_otp_expiry_seconds: int = Field(default=300, env="MSG91_OTP_EXPIRY_SECONDS")
+    msg91_otp_length: int = Field(default=4, env="MSG91_OTP_LENGTH")
+
+    # Customer auth (phone+OTP login) — separate token `type` claims from
+    # admin ("customer_access"/"customer_refresh" vs "admin_access") so a
+    # leaked customer token can never be replayed against an admin route,
+    # even though both reuse the same JWT_SECRET/algorithm.
+    customer_jwt_access_ttl_minutes: int = Field(
+        default=60 * 24 * 7, env="CUSTOMER_JWT_ACCESS_TTL_MINUTES"
+    )
+    customer_jwt_refresh_ttl_days: int = Field(default=90, env="CUSTOMER_JWT_REFRESH_TTL_DAYS")
+
+    @property
+    def msg91_config(self) -> dict:
+        """Non-secret shape exposed to admin routes/frontend."""
+        return {
+            "enabled": self.msg91_enabled,
+            "sender_id": self.msg91_sender_id,
+            "otp_expiry_seconds": self.msg91_otp_expiry_seconds,
+            "otp_length": self.msg91_otp_length,
+        }
+
     # Shiprocket
     shiprocket_enabled: bool = Field(default=False, env="SHIPROCKET_ENABLED")
     shiprocket_email: Optional[str] = Field(default=None, env="SHIPROCKET_EMAIL")

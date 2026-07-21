@@ -46,6 +46,7 @@ def _order_alert_payload(order_dict: dict) -> dict:
     return {
         "order_id": order_dict.get("order_id"),
         "customer_name": shipping_address.get("full_name", ""),
+        "customer_phone": shipping_address.get("phone", ""),
         "user_email": order_dict.get("user_email", ""),
         "total_amount": order_dict.get("total_amount", 0),
         "payment_method": order_dict.get("payment_method", ""),
@@ -66,6 +67,10 @@ class OrderService:
         orders_collection = database[self.COLLECTION_NAME]
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
         await orders_collection.create_index("order_id", unique=True)
+        # Non-unique — "my orders"/account lookups (list_for_customer,
+        # list_by_phone) filter on this; without it those queries are a
+        # full collection scan.
+        await orders_collection.create_index("shipping_address.phone")
         await logs_collection.create_index("order_id", unique=True)
         await order_ledger.ensure_indexes()
 
@@ -762,6 +767,31 @@ class OrderService:
             "shipping_address.phone": phone,
         }
         cursor = collection.find(query).sort("created_at", -1).limit(limit)
+        orders_dict = await cursor.to_list(length=limit)
+
+        orders = []
+        for order_dict in orders_dict:
+            if isinstance(order_dict.get("shipping_address"), dict):
+                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
+            orders.append(Order(**order_dict))
+        return orders
+
+    async def list_by_phone(self, phone: str, limit: int = 50) -> List[Order]:
+        """Authenticated variant of list_for_customer — the caller's phone
+        is already proven by a verified customer session (src/services/
+        customer_auth_service.py), so no email needs to be re-typed/matched.
+        """
+        phone = coerce_safe_string(phone, "phone").strip()
+        if not phone:
+            return []
+
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        cursor = (
+            collection.find({"shipping_address.phone": phone})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
         orders_dict = await cursor.to_list(length=limit)
 
         orders = []

@@ -204,6 +204,7 @@ class ShiprocketService:
             await self._record_scans(order_id, scans)
 
         if changed and publish_alert:
+            shipping_address = order_doc.get("shipping_address") or {}
             await publish_alert(
                 EVENT_SHIPMENT_UPDATE,
                 {
@@ -212,6 +213,8 @@ class ShiprocketService:
                     "raw_status": raw_status,
                     "awb_code": awb or order_doc.get("awb_code"),
                     "courier_name": courier_name or order_doc.get("courier_name"),
+                    "customer_name": shipping_address.get("full_name", ""),
+                    "customer_phone": shipping_address.get("phone", ""),
                 },
             )
         return mapped_status
