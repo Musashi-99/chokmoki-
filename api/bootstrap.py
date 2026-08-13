@@ -94,6 +94,11 @@ try:
     from src.security.exceptions import AuthorizationError, MFACodeRequired, AccountLockedError
     from src.security.client_ip import get_client_ip
     from src.plugins.metrics import render_metrics
+    from src.services.msg91_service import Msg91Service
+    from src.services.sms_template_service import SmsTemplateService
+    from src.models.sms_template import SmsTemplateUpdate
+    from src.services.user_service import UserService
+    from src.services.customer_auth_service import CustomerAuthService
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -187,3 +192,8 @@ except Exception as e:
     SystemLogService = None
     build_update_payload = None
     require_update_fields = None
+    Msg91Service = None
+    SmsTemplateService = None
+    SmsTemplateUpdate = None
+    UserService = None
+    CustomerAuthService = None

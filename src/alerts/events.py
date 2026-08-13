@@ -21,10 +21,10 @@ EVENT_SYSTEM_ERROR = "system.error"
 
 
 async def publish_alert(event_type: str, payload: Dict[str, Any]) -> Optional[str]:
-    """Publish an alert-worthy event. No-ops (and never raises) if alerts
-    aren't configured, so callers on a request's hot path never pay for
-    Redis I/O when the feature is off.
+    """Publish an alert-worthy event. No-ops (and never raises) if neither
+    Telegram nor SMS (MSG91) is configured, so callers on a request's hot
+    path never pay for Redis I/O when both channels are off.
     """
-    if not settings.telegram_enabled:
+    if not settings.telegram_enabled and not settings.msg91_enabled:
         return None
     return await event_bus.publish(ALERTS_STREAM_KEY, event_type, payload)

@@ -60,6 +60,16 @@ async def lifespan(app: FastAPI):
             except Exception as idx_err:
                 if logger:
                     logger.warning(f"Inventory reservation index setup skipped: {idx_err}")
+            try:
+                from src.services.user_service import UserService
+                from src.services.sms_template_service import SmsTemplateService
+
+                await UserService().ensure_indexes()
+                await SmsTemplateService().ensure_indexes()
+                await SmsTemplateService().seed_defaults()
+            except Exception as idx_err:
+                if logger:
+                    logger.warning(f"Customer/SMS index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting
@@ -116,6 +126,7 @@ app.add_middleware(MetricsMiddleware)
 
 
 from api.routes import (
+    account,
     admin_auth,
     admin_backup,
     admin_catalog,
@@ -126,7 +137,9 @@ from api.routes import (
     admin_orders,
     admin_orders_backup,
     admin_reconciliation,
+    admin_sms,
     admin_upload,
+    auth,
     contact,
     cqrs,
     cron,
@@ -140,6 +153,8 @@ app.include_router(health.router)
 app.include_router(storefront.router)
 app.include_router(contact.router)
 app.include_router(orders.router)
+app.include_router(auth.router)
+app.include_router(account.router)
 app.include_router(admin_auth.router)
 app.include_router(admin_upload.router)
 app.include_router(admin_import.router)
@@ -151,6 +166,7 @@ app.include_router(admin_content.router)
 app.include_router(admin_inbox.router)
 app.include_router(admin_fraud.router)
 app.include_router(admin_reconciliation.router)
+app.include_router(admin_sms.router)
 app.include_router(media.router)
 app.include_router(cron.router)
 app.include_router(cqrs.router)

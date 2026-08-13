@@ -55,6 +55,25 @@ rules:
 
   # Public contact form. burst was 1 with 1/hour per email — a single
   # legitimate resubmission (typo fix, "did that send?") would get blocked.
+  # Customer login OTP. field: phone reuses the generic "email" scope
+  # mechanism (src/plugins/rate_limit_config.py) which reads any named body
+  # field — no new scope type needed. "5 per hour" per phone is the actual
+  # abuse cap; the IP bucket is a backstop against one IP cycling numbers.
+  - id: otp_request
+    match:
+      methods: [POST]
+      paths: [/api/auth/otp/request]
+    buckets:
+      - scope: ip
+        rate: 20
+        window: 1h
+        burst: 5
+      - scope: email
+        field: phone
+        rate: 5
+        window: 1h
+        burst: 2
+
   - id: contact
     match:
       methods: [POST]
