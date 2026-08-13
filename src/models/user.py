@@ -42,10 +42,15 @@ class AddressInput(BaseModel):
 
 class User(BaseModel):
     id: str = Field(default_factory=lambda: f"usr_{uuid4().hex}")
-    phone: str
+    # Exactly one of phone/email is guaranteed present (whichever the user
+    # signed up/logged in with) — see UserService.get_or_create_by_phone /
+    # get_or_create_by_email. Both optional so an email-only account and a
+    # phone-only account can coexist.
+    phone: Optional[str] = None
     phone_verified: bool = True
     name: Optional[str] = None
     email: Optional[str] = None
+    email_verified: bool = False
     addresses: list[Address] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -65,6 +70,7 @@ class UserProfileUpdate(BaseModel):
 class CustomerPrincipal:
     user_id: str
     phone: str
+    email: str
     session_id: str
     jti: str
 

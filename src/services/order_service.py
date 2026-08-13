@@ -71,6 +71,9 @@ class OrderService:
         # list_by_phone) filter on this; without it those queries are a
         # full collection scan.
         await orders_collection.create_index("shipping_address.phone")
+        # Non-unique — list_by_email/account "my orders" lookups filter on
+        # this the same way list_by_phone does on shipping_address.phone.
+        await orders_collection.create_index("user_email")
         await logs_collection.create_index("order_id", unique=True)
         await order_ledger.ensure_indexes()
 
@@ -784,11 +787,24 @@ class OrderService:
         phone = coerce_safe_string(phone, "phone").strip()
         if not phone:
             return []
+        return await self._list_by_field("shipping_address.phone", phone, limit)
 
+    async def list_by_email(self, email: str, limit: int = 50) -> List[Order]:
+        """Same as list_by_phone but for an email-login account — matches
+        Order.user_email, which every order (guest or logged-in) already
+        stores, so a guest checkout under this email shows up here too the
+        first time its owner logs in.
+        """
+        email = coerce_safe_string(email, "email").strip().lower()
+        if not email:
+            return []
+        return await self._list_by_field("user_email", email, limit)
+
+    async def _list_by_field(self, field: str, value: str, limit: int) -> List[Order]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         cursor = (
-            collection.find({"shipping_address.phone": phone})
+            collection.find({field: value})
             .sort("created_at", -1)
             .limit(limit)
         )

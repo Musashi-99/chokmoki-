@@ -1,6 +1,6 @@
-"""Customer login (phone + OTP via MSG91). Cookie session auth, distinct
-from admin auth (api/routes/admin_auth.py) — separate cookies, separate
-JWT `type` claims, separate Redis key prefixes.
+"""Customer login (phone + OTP via MSG91, or email + OTP via Brevo). Cookie
+session auth, distinct from admin auth (api/routes/admin_auth.py) —
+separate cookies, separate JWT `type` claims, separate Redis key prefixes.
 """
 import re
 
@@ -15,29 +15,43 @@ from src.services.customer_auth_service import CustomerAuthService
 
 router = APIRouter()
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_identifier(value: str) -> str:
+    value = (value or "").strip()
+    digits = re.sub(r"\D", "", value)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) == 10:
+        return digits
+    if _EMAIL_RE.match(value):
+        return value.lower()
+    raise ValueError("Enter a valid 10-digit mobile number or email address")
+
 
 class OtpRequestPayload(BaseModel):
-    phone: str
+    identifier: str
 
-    @field_validator("phone")
+    @field_validator("identifier")
     @classmethod
-    def validate_phone(cls, value: str) -> str:
-        digits = re.sub(r"\D", "", value or "")
-        if len(digits) == 12 and digits.startswith("91"):
-            digits = digits[2:]
-        if len(digits) != 10:
-            raise ValueError("Enter a valid 10-digit mobile number")
-        return digits
+    def validate_identifier(cls, value: str) -> str:
+        return _validate_identifier(value)
 
 
 class OtpVerifyPayload(BaseModel):
-    phone: str
+    identifier: str
     otp: str
+
+    @field_validator("identifier")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        return _validate_identifier(value)
 
 
 @router.post("/api/auth/otp/request")
 async def otp_request(payload: OtpRequestPayload):
-    sent = await CustomerAuthService().request_otp(payload.phone)
+    sent = await CustomerAuthService().request_otp(payload.identifier)
     if not sent:
         raise HTTPException(status_code=502, detail="Could not send OTP. Try again shortly.")
     return {"success": True}
@@ -45,7 +59,7 @@ async def otp_request(payload: OtpRequestPayload):
 
 @router.post("/api/auth/otp/verify")
 async def otp_verify(payload: OtpVerifyPayload):
-    result = await CustomerAuthService().verify_otp_and_login(payload.phone, payload.otp)
+    result = await CustomerAuthService().verify_otp_and_login(payload.identifier, payload.otp)
     if not result:
         raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 

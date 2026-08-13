@@ -14,6 +14,8 @@ from src.alerts.events import (
     EVENT_SYSTEM_ERROR,
 )
 from src.plugins.logger import logger
+from src.services.email_service import EmailService
+from src.services.email_templates import render_order_confirmation_email, render_order_status_email
 
 # Admin-mutation resources worth a "setting changed" alert. Deliberately
 # excludes: "orders" (has its own richer alert via OrderCreatedHandler),
@@ -135,6 +137,33 @@ def _format_shipment_alert(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def _send_order_email(order_id: str, kind: str, status: Optional[str] = None) -> None:
+    """Best-effort, independent of SMS/Telegram outcome — mirrors
+    _send_lifecycle_sms's never-raise posture. Fetches the full Order (the
+    alert payload only carries a lightweight summary) since the email
+    template needs shipping address + per-item pricing.
+    """
+    try:
+        from src.services.order_service import OrderService
+
+        order = await OrderService().get_by_id(order_id)
+        if not order or not order.user_email:
+            return
+
+        if kind == "confirmation":
+            subject, html = render_order_confirmation_email(order)
+        else:
+            rendered = render_order_status_email(order, status or "")
+            if not rendered:
+                return
+            subject, html = rendered
+
+        await EmailService().send(order.user_email, subject, html)
+    except Exception as e:
+        if logger:
+            logger.error(f"Order email '{kind}' failed for order {order_id}: {e}")
+
+
 async def _send_lifecycle_sms(
     sms_channel: Optional[SmsChannel], template_key: str, payload: Dict[str, Any]
 ) -> None:
@@ -174,6 +203,9 @@ class OrderCreatedHandler(AlertHandler):
 
     async def _process(self, event: AlertEvent) -> bool:
         await _send_lifecycle_sms(self._sms_channel, "order_placed", event.payload)
+        order_id = event.payload.get("order_id")
+        if order_id:
+            await _send_order_email(order_id, "confirmation")
         sent = await self._channel.send(_format_order_alert(event.payload))
         if not sent:
             raise RuntimeError("Order alert channel send failed")
@@ -263,9 +295,13 @@ class ShipmentUpdateHandler(AlertHandler):
         return event.type == EVENT_SHIPMENT_UPDATE
 
     async def _process(self, event: AlertEvent) -> bool:
-        sms_key = SHIPMENT_STATUS_SMS_KEY.get(event.payload.get("status"))
+        status = event.payload.get("status")
+        sms_key = SHIPMENT_STATUS_SMS_KEY.get(status)
         if sms_key:
             await _send_lifecycle_sms(self._sms_channel, sms_key, event.payload)
+        order_id = event.payload.get("order_id")
+        if order_id and status:
+            await _send_order_email(order_id, "status", status)
         sent = await self._channel.send(_format_shipment_alert(event.payload))
         if not sent:
             raise RuntimeError("Shipment alert channel send failed")

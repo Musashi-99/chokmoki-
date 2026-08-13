@@ -100,6 +100,25 @@ class Settings(BaseSettings):
     msg91_otp_expiry_seconds: int = Field(default=300, env="MSG91_OTP_EXPIRY_SECONDS")
     msg91_otp_length: int = Field(default=4, env="MSG91_OTP_LENGTH")
 
+    # Brevo SMTP — email OTP login/signup (alternate to MSG91 while it's
+    # unverified) plus order-confirmation/status-update emails. A plain SMTP
+    # relay, not a special SDK — same "guarded, never raises" posture as
+    # Msg91Service (src/services/email_service.py).
+    smtp_host: str = Field(default="smtp-relay.brevo.com", env="SMTP_HOST")
+    smtp_port: int = Field(default=587, env="SMTP_PORT")
+    smtp_username: Optional[str] = Field(default=None, env="SMTP_USERNAME")
+    smtp_password: Optional[str] = Field(default=None, env="SMTP_PASSWORD")
+    smtp_from: Optional[str] = Field(default=None, env="SMTP_FROM")
+    # Base URL of the deployed storefront — used to build absolute links
+    # (order tracking, "view your order") inside outgoing emails.
+    frontend_url: str = Field(default="https://chokmoki.com", env="FRONTEND_URL")
+    email_otp_expiry_seconds: int = Field(default=300, env="EMAIL_OTP_EXPIRY_SECONDS")
+    email_otp_length: int = Field(default=6, env="EMAIL_OTP_LENGTH")
+
+    @property
+    def email_enabled(self) -> bool:
+        return bool(self.smtp_username and self.smtp_password and self.smtp_from)
+
     # Customer auth (phone+OTP login) — separate token `type` claims from
     # admin ("customer_access"/"customer_refresh" vs "admin_access") so a
     # leaked customer token can never be replayed against an admin route,

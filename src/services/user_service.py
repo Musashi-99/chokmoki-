@@ -24,10 +24,17 @@ def normalize_phone(raw: str) -> str:
     return digits
 
 
+def normalize_email(raw: str) -> str:
+    return (raw or "").strip().lower()
+
+
 class UserService:
     async def ensure_indexes(self) -> None:
         database = await db.get_database()
-        await database[COLLECTION_NAME].create_index("phone", unique=True)
+        # sparse: phone-only and email-only accounts coexist without either
+        # unique index rejecting the other's missing field as a duplicate.
+        await database[COLLECTION_NAME].create_index("phone", unique=True, sparse=True)
+        await database[COLLECTION_NAME].create_index("email", unique=True, sparse=True)
 
     async def get_by_id(self, user_id: str) -> Optional[User]:
         database = await db.get_database()
@@ -62,6 +69,32 @@ class UserService:
             # index on phone is the actual guard; fall back to the doc that
             # won instead of erroring the second request.
             existing = await collection.find_one({"phone": phone})
+            if existing:
+                return User(**existing)
+            raise
+        return user
+
+    async def get_or_create_by_email(self, email: str) -> User:
+        email = normalize_email(email)
+        database = await db.get_database()
+        collection = database[COLLECTION_NAME]
+        now = datetime.utcnow()
+
+        existing = await collection.find_one({"email": email})
+        if existing:
+            await collection.update_one(
+                {"email": email}, {"$set": {"last_login_at": now}}
+            )
+            existing["last_login_at"] = now
+            return User(**existing)
+
+        user = User(email=email, email_verified=True, last_login_at=now)
+        doc = user.model_dump()
+        try:
+            await collection.insert_one(doc)
+        except Exception:
+            # Same concurrent first-login race as get_or_create_by_phone.
+            existing = await collection.find_one({"email": email})
             if existing:
                 return User(**existing)
             raise

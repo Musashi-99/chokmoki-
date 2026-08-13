@@ -81,5 +81,21 @@ async def delete_address(
 
 @router.get("/api/account/orders")
 async def list_my_orders(principal: CustomerPrincipal = Depends(require_customer_auth)):
-    orders = await OrderService().list_by_phone(principal.phone)
-    return [order.model_dump(by_alias=True) for order in orders]
+    """Merges phone- and email-matched orders so a guest checkout placed
+    under either identifier shows up once its owner logs in, regardless of
+    whether they logged in via phone (MSG91) or email (Brevo) OTP.
+    """
+    order_service = OrderService()
+    by_phone = await order_service.list_by_phone(principal.phone) if principal.phone else []
+    by_email = await order_service.list_by_email(principal.email) if principal.email else []
+
+    seen: set[str] = set()
+    merged = []
+    for order in by_phone + by_email:
+        if order.order_id in seen:
+            continue
+        seen.add(order.order_id)
+        merged.append(order)
+    merged.sort(key=lambda o: o.created_at, reverse=True)
+
+    return [order.model_dump(by_alias=True) for order in merged]

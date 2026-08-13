@@ -33,15 +33,17 @@ class CustomerSessionService:
     def _hash_token(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    async def create_session(self, user_id: str, phone: str) -> tuple[str, str]:
-        """Returns (session_id, refresh_token_plain)."""
+    async def create_session(self, user_id: str, phone: str = "", email: str = "") -> tuple[str, str]:
+        """Returns (session_id, refresh_token_plain). Exactly one of
+        phone/email is normally non-empty, mirroring User.phone/email."""
         session_id = str(uuid.uuid4())
         refresh_token = secrets.token_urlsafe(48)
         refresh_hash = self._hash_token(refresh_token)
 
         session_doc = {
             "user_id": user_id,
-            "phone": phone,
+            "phone": phone or "",
+            "email": email or "",
             "refresh_token_hash": refresh_hash,
             "created_at": datetime.utcnow().isoformat(),
             "last_rotated_at": datetime.utcnow().isoformat(),
@@ -95,8 +97,8 @@ class CustomerSessionService:
             pipe.srem(f"{self.USER_SESSIONS_PREFIX}{user_id}", session_id)
         await pipe.execute()
 
-    async def rotate_refresh_token(self, refresh_token: str) -> Optional[tuple[str, str, str, str]]:
-        """Returns (session_id, user_id, phone, new_refresh_token) or None."""
+    async def rotate_refresh_token(self, refresh_token: str) -> Optional[tuple[str, str, str, str, str]]:
+        """Returns (session_id, user_id, phone, email, new_refresh_token) or None."""
         refresh_hash = self._hash_token(refresh_token)
         redis = await redis_client.get_client()
         session_id = await redis.get(f"{self.REFRESH_PREFIX}{refresh_hash}")
@@ -123,7 +125,13 @@ class CustomerSessionService:
         pipe.setex(f"{self.REFRESH_PREFIX}{new_hash}", self._refresh_ttl_seconds(), session_id)
         await pipe.execute()
 
-        return session_id, session["user_id"], session["phone"], new_refresh
+        return (
+            session_id,
+            session["user_id"],
+            session.get("phone", ""),
+            session.get("email", ""),
+            new_refresh,
+        )
 
     async def get_session_id_for_refresh(self, refresh_token: str) -> Optional[str]:
         refresh_hash = self._hash_token(refresh_token)
