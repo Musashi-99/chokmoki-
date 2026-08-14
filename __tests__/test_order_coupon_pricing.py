@@ -268,3 +268,52 @@ class TestOrderCouponPricing:
         assert doc["total_amount"] == 2000
         assert order.discount == 0
         assert order.total_amount == 2000
+
+    @pytest.mark.asyncio
+    async def test_admin_create_cart_percent_persists_snapshot(self):
+        coupon = _cart_percent_coupon()
+        expected_computed, expected_total, expected_subtotal = compute_discount(
+            [SimpleNamespace(product_id="p1", total_price=2000)], coupon
+        )
+
+        with order_pipeline_mocks(coupon=coupon) as mocks:
+            await OrderService().create_from_admin(_order_payload(coupon_code="SAVE10"))
+
+        mocks.orders.insert_one.assert_awaited_once()
+        doc = mocks.orders.insert_one.call_args.args[0]
+        assert doc["subtotal"] == expected_subtotal
+        assert doc["discount"] == expected_computed
+        assert doc["total_amount"] == expected_total
+        assert doc["applied_discount"]["code"] == "SAVE10"
+
+    @pytest.mark.asyncio
+    async def test_admin_create_ignores_payload_discount_without_code(self):
+        with order_pipeline_mocks(coupon=None) as mocks:
+            await OrderService().create_from_admin(
+                _order_payload(
+                    pricing={"subtotal": 2000, "discount": 9999, "shipping": 0, "total": 1}
+                )
+            )
+
+        doc = mocks.orders.insert_one.call_args.args[0]
+        assert "applied_discount" not in doc
+        assert doc["discount"] == 0
+        assert doc["total_amount"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_initiate_order_without_coupon_omits_applied_discount(self):
+        order_data = OrderCreateInput(**_order_payload(paymentMethod="razorpay"))
+
+        with order_pipeline_mocks(coupon=None) as mocks:
+            result = await OrderService().initiate_order(order_data)
+
+        mocks.razorpay.return_value.create_order.assert_called_once()
+        assert mocks.razorpay.return_value.create_order.call_args.kwargs["amount"] == 2000
+        assert result.amount == 2000
+        pending_raw = next(
+            value for key, value in mocks.redis.store.items() if key.startswith("pending_order:")
+        )
+        pending = json.loads(pending_raw)
+        assert pending["discount"] == 0
+        assert pending["total_amount"] == 2000
+        assert "applied_discount" not in pending
