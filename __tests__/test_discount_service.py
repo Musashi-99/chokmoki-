@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.models.coupon import (
     Coupon,
     CouponCreate,
+    CouponPreviewInput,
     DiscountIndicator,
     DiscountType,
 )
@@ -205,6 +206,17 @@ class TestCouponCreate:
         assert coupon.amount == 100
 
 
+class TestCouponPreviewInput:
+    def test_empty_items_rejected(self):
+        with pytest.raises(ValidationError):
+            CouponPreviewInput(code="SAVE10", items=[])
+
+    def test_over_50_items_rejected(self):
+        items = [{"productId": f"p{i}", "quantity": 1} for i in range(51)]
+        with pytest.raises(ValidationError):
+            CouponPreviewInput(code="SAVE10", items=items)
+
+
 def _coupon(**kwargs) -> Coupon:
     defaults = dict(
         code="SAVE10",
@@ -249,7 +261,7 @@ class TestDiscountServiceApply:
         items = [_item("p1", 2000)]
         coupon = _coupon(active=False)
         with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
-            with pytest.raises(ValueError, match="Coupon is not active"):
+            with pytest.raises(ValueError, match="Invalid coupon"):
                 await DiscountService().apply("SAVE10", items)
 
     @pytest.mark.asyncio

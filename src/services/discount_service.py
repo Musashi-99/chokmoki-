@@ -67,7 +67,7 @@ class DiscountService:
         return compute_discount(items, coupon, shipping)
 
     async def apply(
-        self, code: str, validated_items, shipping: float = 0
+        self, code: Optional[str], validated_items, shipping: float = 0
     ) -> tuple[PricingDTO, Optional[AppliedDiscount]]:
         items = validated_items or []
         if not (code or "").strip():
@@ -84,10 +84,8 @@ class DiscountService:
             )
 
         coupon = await CouponService().get_by_code(code)
-        if coupon is None:
+        if coupon is None or not coupon.active:
             raise ValueError("Invalid coupon")
-        if not coupon.active:
-            raise ValueError("Coupon is not active")
 
         computed, total, subtotal = compute_discount(items, coupon, shipping)
         return (
@@ -180,6 +178,19 @@ class CouponService:
         if not isinstance(update_data, CouponUpdate):
             update_data = CouponUpdate.model_validate(update_data)
         payload = update_data.model_dump(exclude_unset=True)
+        existing = await self.get_by_id(coupon_id)
+        if existing is None:
+            return None
+        merged = {
+            "code": existing.code,
+            "type": existing.type,
+            "amount": existing.amount,
+            "indicator": existing.indicator,
+            "product_id": existing.product_id,
+            "active": existing.active,
+        }
+        merged.update(payload)
+        CouponCreate(**merged)
         payload["updated_at"] = datetime.now(timezone.utc)
         collection = await self._collection()
         try:

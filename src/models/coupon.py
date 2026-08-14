@@ -118,4 +118,4 @@ class CouponPreviewItem(BaseModel):
 
 class CouponPreviewInput(BaseModel):
     code: str
-    items: List[CouponPreviewItem]
+    items: List[CouponPreviewItem] = Field(..., min_length=1, max_length=50)

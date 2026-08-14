@@ -142,3 +142,30 @@ class TestCouponService:
         assert filt == {"_id": oid}
         assert set(op["$set"].keys()) == {"active", "updated_at"}
         assert op["$set"]["active"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_amount_only_150_on_percent_rejected(self):
+        oid = ObjectId()
+        doc = _coupon_doc()
+        doc["_id"] = oid
+        collection = AsyncMock()
+        collection.find_one = AsyncMock(return_value=doc)
+        collection.update_one = AsyncMock()
+
+        with _mock_db(collection):
+            with pytest.raises(ValidationError):
+                await CouponService().update(str(oid), {"amount": 150})
+
+        collection.update_one.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_missing_returns_none_before_merge(self):
+        collection = AsyncMock()
+        collection.find_one = AsyncMock(return_value=None)
+        collection.update_one = AsyncMock()
+
+        with _mock_db(collection):
+            result = await CouponService().update(str(ObjectId()), {"amount": 150})
+
+        assert result is None
+        collection.update_one.assert_not_called()
