@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from src.models.coupon import Coupon, CouponCreate, DiscountIndicator, DiscountType
+from src.models.coupon import Coupon, CouponCreate, CouponUpdate, DiscountIndicator, DiscountType
 
 
 def money(x) -> float:
@@ -106,16 +106,14 @@ class CouponService:
         doc = await collection.find_one({"code": (code or "").strip().upper()})
         return Coupon(**doc) if doc else None
 
-    async def update(self, coupon_id: str, update_data: Dict) -> Optional[Coupon]:
-        collection = await self._collection()
-        payload = {
-            k: v for k, v in update_data.items() if k not in {"_id", "id", "created_at"}
-        }
-        if not payload:
-            return await self.get_by_id(coupon_id)
-        if "code" in payload and isinstance(payload["code"], str):
-            payload["code"] = payload["code"].strip().upper()
+    async def update(
+        self, coupon_id: str, update_data: CouponUpdate | Dict[str, Any]
+    ) -> Optional[Coupon]:
+        if not isinstance(update_data, CouponUpdate):
+            update_data = CouponUpdate.model_validate(update_data)
+        payload = update_data.model_dump(exclude_unset=True)
         payload["updated_at"] = datetime.now(timezone.utc)
+        collection = await self._collection()
         try:
             result = await collection.update_one(
                 {"_id": ObjectId(coupon_id)},

@@ -100,3 +100,33 @@ class TestCouponService:
         assert coupon.code == "SAVE10"
         assert coupon.active is False
         collection.find_one.assert_called_once_with({"code": "SAVE10"})
+
+    @pytest.mark.asyncio
+    async def test_update_dict_amount_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            await CouponService().update(str(ObjectId()), {"amount": 0})
+
+    @pytest.mark.asyncio
+    async def test_update_dict_percent_101_rejected(self):
+        with pytest.raises(ValidationError):
+            await CouponService().update(
+                str(ObjectId()),
+                {"indicator": DiscountIndicator.PERCENT, "amount": 101},
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_sets_exclude_unset_and_updated_at(self):
+        oid = ObjectId()
+        doc = _coupon_doc()
+        doc["_id"] = oid
+        collection = AsyncMock()
+        collection.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+        collection.find_one = AsyncMock(return_value=doc)
+
+        with _mock_db(collection):
+            await CouponService().update(str(oid), {"active": False})
+
+        filt, op = collection.update_one.call_args[0]
+        assert filt == {"_id": oid}
+        assert set(op["$set"].keys()) == {"active", "updated_at"}
+        assert op["$set"]["active"] is False
