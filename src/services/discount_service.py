@@ -1,12 +1,21 @@
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from src.models.coupon import Coupon, CouponCreate, CouponUpdate, DiscountIndicator, DiscountType
+from src.models.common import PricingDTO
+from src.models.coupon import (
+    AppliedDiscount,
+    Coupon,
+    CouponCreate,
+    CouponUpdate,
+    DiscountIndicator,
+    DiscountType,
+)
 
 
 def money(x) -> float:
@@ -49,7 +58,6 @@ def compute_discount(
 
 
 class DiscountService:
-    # apply/lookup is added in a later task
     def compute(
         self,
         items: Sequence[Any],
@@ -57,6 +65,66 @@ class DiscountService:
         shipping: float = 0,
     ) -> tuple[float, float, float]:
         return compute_discount(items, coupon, shipping)
+
+    async def apply(
+        self, code: str, validated_items, shipping: float = 0
+    ) -> tuple[PricingDTO, Optional[AppliedDiscount]]:
+        items = validated_items or []
+        if not (code or "").strip():
+            subtotal = money(sum(_attr(item, "total_price") for item in items))
+            ship = money(shipping)
+            return (
+                PricingDTO(
+                    subtotal=subtotal,
+                    discount=0,
+                    shipping=ship,
+                    total=money(subtotal + ship),
+                ),
+                None,
+            )
+
+        coupon = await CouponService().get_by_code(code)
+        if coupon is None:
+            raise ValueError("Invalid coupon")
+        if not coupon.active:
+            raise ValueError("Coupon is not active")
+
+        computed, total, subtotal = compute_discount(items, coupon, shipping)
+        return (
+            PricingDTO(
+                subtotal=subtotal,
+                discount=computed,
+                shipping=money(shipping),
+                total=total,
+            ),
+            AppliedDiscount(
+                code=coupon.code,
+                type=coupon.type,
+                amount=coupon.amount,
+                indicator=coupon.indicator,
+            ),
+        )
+
+    async def resolve_preview_items(self, items: Sequence[Any]) -> list:
+        from src.services.product_service import ProductService
+
+        product_service = ProductService()
+        priced = []
+        for item in items:
+            product_id = _attr(item, "productId")
+            quantity = _attr(item, "quantity")
+            product = await product_service.get_by_id(str(product_id))
+            if not product:
+                raise ValueError(f"Product {product_id} not found")
+            if not product.active:
+                raise ValueError(f"Product {product_id} is not active")
+            priced.append(
+                SimpleNamespace(
+                    product_id=str(product.id),
+                    total_price=float(product.price_inr) * int(quantity),
+                )
+            )
+        return priced
 
 
 class CouponService:

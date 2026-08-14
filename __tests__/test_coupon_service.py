@@ -75,6 +75,18 @@ class TestCouponUpdate:
         with pytest.raises(ValidationError):
             CouponUpdate(indicator=DiscountIndicator.PERCENT, amount=101)
 
+    def test_amount_only_101_on_existing_percent_rejected_via_create_merge(self):
+        existing = CouponCreate(
+            code="SAVE10",
+            type=DiscountType.CART,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+        )
+        merged = existing.model_dump()
+        merged["amount"] = 101
+        with pytest.raises(ValidationError):
+            CouponCreate(**merged)
+
 
 class TestCouponService:
     @pytest.mark.asyncio

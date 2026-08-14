@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -10,11 +11,12 @@ from pydantic import ValidationError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.coupon import (
+    Coupon,
     CouponCreate,
     DiscountIndicator,
     DiscountType,
 )
-from src.services.discount_service import compute_discount
+from src.services.discount_service import CouponService, DiscountService, compute_discount
 
 
 def _item(product_id: str, total_price: float) -> SimpleNamespace:
@@ -201,3 +203,117 @@ class TestCouponCreate:
             indicator=DiscountIndicator.PERCENT,
         )
         assert coupon.amount == 100
+
+
+def _coupon(**kwargs) -> Coupon:
+    defaults = dict(
+        code="SAVE10",
+        type=DiscountType.CART,
+        amount=10,
+        indicator=DiscountIndicator.PERCENT,
+        active=True,
+        product_id=None,
+    )
+    defaults.update(kwargs)
+    return Coupon(**defaults)
+
+
+class TestDiscountServiceApply:
+    @pytest.mark.asyncio
+    async def test_blank_code_zero_discount_no_applied(self):
+        items = [_item("p1", 2000)]
+        pricing, applied = await DiscountService().apply("", items, shipping=50)
+        assert pricing.subtotal == 2000
+        assert pricing.discount == 0
+        assert pricing.shipping == 50
+        assert pricing.total == 2050
+        assert applied is None
+
+    @pytest.mark.asyncio
+    async def test_none_code_zero_discount_no_applied(self):
+        items = [_item("p1", 2000)]
+        pricing, applied = await DiscountService().apply(None, items)
+        assert pricing.discount == 0
+        assert pricing.total == 2000
+        assert applied is None
+
+    @pytest.mark.asyncio
+    async def test_missing_coupon_raises_invalid(self):
+        items = [_item("p1", 2000)]
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=None):
+            with pytest.raises(ValueError, match="Invalid coupon"):
+                await DiscountService().apply("NOPE", items)
+
+    @pytest.mark.asyncio
+    async def test_inactive_coupon_raises(self):
+        items = [_item("p1", 2000)]
+        coupon = _coupon(active=False)
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            with pytest.raises(ValueError, match="Coupon is not active"):
+                await DiscountService().apply("SAVE10", items)
+
+    @pytest.mark.asyncio
+    async def test_valid_cart_percent_snapshot_amount_is_configured(self):
+        items = [_item("p1", 2000)]
+        coupon = _coupon(code="SAVE10", amount=10, indicator=DiscountIndicator.PERCENT)
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            pricing, applied = await DiscountService().apply("SAVE10", items)
+        assert pricing.subtotal == 2000
+        assert pricing.discount == 200
+        assert pricing.shipping == 0
+        assert pricing.total == 1800
+        assert applied is not None
+        assert applied.code == "SAVE10"
+        assert applied.type == DiscountType.CART
+        assert applied.amount == 10
+        assert applied.indicator == DiscountIndicator.PERCENT
+        assert not hasattr(applied, "product_id") or "product_id" not in applied.model_dump()
+
+    @pytest.mark.asyncio
+    async def test_product_miss_raises(self):
+        items = [_item("other", 2000)]
+        coupon = _coupon(
+            type=DiscountType.PRODUCT,
+            product_id="match",
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+        )
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            with pytest.raises(ValueError, match="Coupon does not apply to this cart"):
+                await DiscountService().apply("SAVE10", items)
+
+
+class TestResolvePreviewItems:
+    @pytest.mark.asyncio
+    async def test_uses_catalog_price_times_quantity(self):
+        product = SimpleNamespace(id="pid1", price_inr=1500, active=True)
+        mock_svc = MagicMock()
+        mock_svc.get_by_id = AsyncMock(return_value=product)
+        with patch("src.services.product_service.ProductService", return_value=mock_svc):
+            items = await DiscountService().resolve_preview_items(
+                [SimpleNamespace(productId="pid1", quantity=2)]
+            )
+        assert items[0].product_id == "pid1"
+        assert items[0].total_price == 3000
+        mock_svc.get_by_id.assert_called_once_with("pid1")
+
+    @pytest.mark.asyncio
+    async def test_missing_product_raises(self):
+        mock_svc = MagicMock()
+        mock_svc.get_by_id = AsyncMock(return_value=None)
+        with patch("src.services.product_service.ProductService", return_value=mock_svc):
+            with pytest.raises(ValueError, match="not found"):
+                await DiscountService().resolve_preview_items(
+                    [SimpleNamespace(productId="missing", quantity=1)]
+                )
+
+    @pytest.mark.asyncio
+    async def test_inactive_product_raises(self):
+        product = SimpleNamespace(id="pid1", price_inr=1500, active=False)
+        mock_svc = MagicMock()
+        mock_svc.get_by_id = AsyncMock(return_value=product)
+        with patch("src.services.product_service.ProductService", return_value=mock_svc):
+            with pytest.raises(ValueError, match="is not active"):
+                await DiscountService().resolve_preview_items(
+                    [SimpleNamespace(productId="pid1", quantity=1)]
+                )
