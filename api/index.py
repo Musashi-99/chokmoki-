@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI):
             except Exception as idx_err:
                 if logger:
                     logger.warning(f"Customer/SMS index setup skipped: {idx_err}")
+            try:
+                from src.services.discount_service import CouponService
+
+                await CouponService().ensure_indexes()
+            except Exception as idx_err:
+                if logger:
+                    logger.warning(f"Coupon index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting

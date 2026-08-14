@@ -46,6 +46,8 @@ try:
     from src.services.hero_config_service import HeroConfigService
     from src.models.site_asset import SiteAssetCreate, SiteAssetUpdate
     from src.models.faq_item import FAQItemCreate, FAQItemUpdate
+    from src.models.coupon import CouponCreate, CouponUpdate
+    from src.services.discount_service import CouponService
     from src.models.collection_slide import CollectionSlideCreate, CollectionSlideUpdate
     from src.services.site_asset_service import SiteAssetService
     from src.services.faq_item_service import FAQItemService
@@ -153,6 +155,9 @@ except Exception as e:
     CollectionSlideCreate = None
     SiteAssetService = None
     FAQItemService = None
+    CouponCreate = None
+    CouponUpdate = None
+    CouponService = None
     CollectionSlideService = None
     StudioSettingsService = None
     ShopPageSettingsService = None

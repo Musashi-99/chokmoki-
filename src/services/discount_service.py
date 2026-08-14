@@ -1,8 +1,12 @@
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from typing import Any, Dict, List, Optional
 
-from src.models.coupon import DiscountIndicator, DiscountType
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
+
+from src.models.coupon import Coupon, CouponCreate, DiscountIndicator, DiscountType
 
 
 def money(x) -> float:
@@ -53,3 +57,77 @@ class DiscountService:
         shipping: float = 0,
     ) -> tuple[float, float, float]:
         return compute_discount(items, coupon, shipping)
+
+
+class CouponService:
+    COLLECTION_NAME = "coupons"
+
+    async def _collection(self):
+        from src.database.connection import db
+
+        database = await db.get_database()
+        return database[self.COLLECTION_NAME]
+
+    async def ensure_indexes(self) -> None:
+        collection = await self._collection()
+        await collection.create_index("code", unique=True)
+
+    async def create(self, data: CouponCreate) -> Coupon:
+        collection = await self._collection()
+        existing = await collection.find_one({"code": data.code})
+        if existing:
+            raise ValueError("Coupon code already exists")
+        now = datetime.now(timezone.utc)
+        doc = data.model_dump()
+        doc["created_at"] = now
+        doc["updated_at"] = now
+        try:
+            result = await collection.insert_one(doc)
+        except DuplicateKeyError:
+            raise ValueError("Coupon code already exists")
+        doc["_id"] = result.inserted_id
+        return Coupon(**doc)
+
+    async def list(self, active: Optional[bool] = None) -> List[Dict[str, Any]]:
+        collection = await self._collection()
+        query: Dict[str, Any] = {}
+        if active is not None:
+            query["active"] = active
+        docs = await collection.find(query).to_list(length=500)
+        return [Coupon(**doc).model_dump(by_alias=True) for doc in docs]
+
+    async def get_by_id(self, coupon_id: str) -> Optional[Coupon]:
+        collection = await self._collection()
+        doc = await collection.find_one({"_id": ObjectId(coupon_id)})
+        return Coupon(**doc) if doc else None
+
+    async def get_by_code(self, code: str) -> Optional[Coupon]:
+        collection = await self._collection()
+        doc = await collection.find_one({"code": (code or "").strip().upper()})
+        return Coupon(**doc) if doc else None
+
+    async def update(self, coupon_id: str, update_data: Dict) -> Optional[Coupon]:
+        collection = await self._collection()
+        payload = {
+            k: v for k, v in update_data.items() if k not in {"_id", "id", "created_at"}
+        }
+        if not payload:
+            return await self.get_by_id(coupon_id)
+        if "code" in payload and isinstance(payload["code"], str):
+            payload["code"] = payload["code"].strip().upper()
+        payload["updated_at"] = datetime.now(timezone.utc)
+        try:
+            result = await collection.update_one(
+                {"_id": ObjectId(coupon_id)},
+                {"$set": payload},
+            )
+        except DuplicateKeyError:
+            raise ValueError("Coupon code already exists")
+        if result.matched_count == 0:
+            return None
+        return await self.get_by_id(coupon_id)
+
+    async def delete(self, coupon_id: str) -> bool:
+        collection = await self._collection()
+        result = await collection.delete_one({"_id": ObjectId(coupon_id)})
+        return result.deleted_count > 0

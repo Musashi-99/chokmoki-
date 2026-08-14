@@ -99,6 +99,17 @@ class CouponUpdate(StrictUpdateModel):
             return v.strip().upper()
         return v
 
+    @model_validator(mode="after")
+    def validate_amount(self):
+        if self.amount is None:
+            return self
+        if self.indicator == DiscountIndicator.PERCENT:
+            if not (0 < self.amount <= 100):
+                raise ValueError("PERCENT amount must be greater than 0 and at most 100")
+        elif self.amount <= 0:
+            raise ValueError("amount must be greater than 0")
+        return self
+
 
 class CouponPreviewItem(BaseModel):
     productId: str
