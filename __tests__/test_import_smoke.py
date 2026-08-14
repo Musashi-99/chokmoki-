@@ -78,6 +78,10 @@ class TestApiIndexImportSmoke:
         paths = {route.path for route in api_module.app.routes}
         assert "/api/admin/logout" in paths
 
+    def test_pincode_route_registered(self, api_module):
+        paths = {route.path for route in api_module.app.routes}
+        assert "/api/pincode/{pincode}" in paths
+
     def test_admin_refresh_endpoint_evaluated_with_cookie_dependency(self, api_module):
         mock_redis = AsyncMock()
         mock_redis.script_load = AsyncMock(return_value="sha")

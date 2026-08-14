@@ -146,11 +146,13 @@ from api.routes import (
     health,
     media,
     orders,
+    pincode,
     storefront,
 )
 
 app.include_router(health.router)
 app.include_router(storefront.router)
+app.include_router(pincode.router)
 app.include_router(contact.router)
 app.include_router(orders.router)
 app.include_router(auth.router)

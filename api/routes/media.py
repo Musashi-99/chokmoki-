@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from api.bootstrap import logger, settings
-from src.services.media_resize import resize_image_bytes
+from src.services.media_resize import clamp_resize_width, resize_image_bytes, cache_headers
 
 router = APIRouter()
 
@@ -79,8 +79,12 @@ async def serve_media(key: str, w: int | None = Query(default=None, ge=1, le=192
 
     try:
         body, content_type, cache_control, etag = await asyncio.to_thread(fetch)
-        if w:
-            body, content_type = resize_image_bytes(body, content_type, w)
+        width = clamp_resize_width(w)
+        if width:
+            body, content_type = resize_image_bytes(body, content_type, width)
+        headers = cache_headers(etag, width if width else None)
+        if not width:
+            headers["Cache-Control"] = cache_control
     except Exception as e:
         code = getattr(e, "response", {}).get("Error", {}).get("Code", "") if hasattr(e, "response") else ""
         if code in ("NoSuchKey", "404"):
@@ -89,7 +93,4 @@ async def serve_media(key: str, w: int | None = Query(default=None, ge=1, le=192
             logger.error(f"Media proxy failed for key '{key}': {e}")
         raise HTTPException(status_code=502, detail="Media temporarily unavailable")
 
-    headers = {"Cache-Control": cache_control}
-    if etag:
-        headers["ETag"] = etag
     return Response(content=body, media_type=content_type, headers=headers)

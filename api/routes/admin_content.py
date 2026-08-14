@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 import json
 import httpx
-from api.bootstrap import BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, require_admin, require_update_fields, settings
+from api.bootstrap import AccountPageSettingsService, AccountPageSettingsUpdate, BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, require_admin, require_update_fields, settings
 from api.json_utils import JSONEncoder, _json_response_content
 
 router = APIRouter()
@@ -625,6 +625,32 @@ async def admin_upsert_contact_page(
     try:
         data = ContactPageSettingsUpdate(**payload)
         updated = await ContactPageSettingsService().upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=json.loads(json.dumps(
+        updated.model_dump(by_alias=True), cls=JSONEncoder
+    )))
+
+
+@router.get("/api/admin/account-page")
+async def admin_get_account_page(email: str = Depends(require_admin)):
+    if AccountPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    settings = await AccountPageSettingsService().get_admin()
+    return JSONResponse(content=_json_response_content({
+        "data": settings.model_dump(by_alias=True) if settings else None,
+    }))
+
+
+@router.put("/api/admin/account-page")
+async def admin_upsert_account_page(
+    payload: Dict[str, Any], email: str = Depends(require_admin)
+):
+    if AccountPageSettingsService is None or AccountPageSettingsUpdate is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        data = AccountPageSettingsUpdate(**payload)
+        updated = await AccountPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=json.loads(json.dumps(

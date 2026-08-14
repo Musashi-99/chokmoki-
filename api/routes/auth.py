@@ -1,4 +1,4 @@
-"""Customer login (phone + OTP via MSG91, or email + OTP via Brevo). Cookie
+"""Customer login (email + OTP via Brevo). Cookie
 session auth, distinct from admin auth (api/routes/admin_auth.py) —
 separate cookies, separate JWT `type` claims, separate Redis key prefixes.
 """
@@ -20,14 +20,9 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _validate_identifier(value: str) -> str:
     value = (value or "").strip()
-    digits = re.sub(r"\D", "", value)
-    if len(digits) == 12 and digits.startswith("91"):
-        digits = digits[2:]
-    if len(digits) == 10:
-        return digits
     if _EMAIL_RE.match(value):
         return value.lower()
-    raise ValueError("Enter a valid 10-digit mobile number or email address")
+    raise ValueError("Enter a valid email address")
 
 
 class OtpRequestPayload(BaseModel):

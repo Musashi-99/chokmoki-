@@ -97,7 +97,7 @@ def phase2():
         "/api/testimonials", "/api/hero", "/api/site-assets", "/api/faq",
         "/api/collection-slides", "/api/studio-settings", "/api/shop-page",
         "/api/policies", "/api/home-page", "/api/story-page", "/api/navigation",
-        "/api/contact-page", "/api/history-page", "/api/product-page", "/api/journal",
+        "/api/contact-page", "/api/account-page", "/api/history-page", "/api/product-page", "/api/journal",
         "/health",
     ]:
         r = req("GET", ep)

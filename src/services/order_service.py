@@ -26,6 +26,7 @@ from src.resilience.circuit_breaker import CircuitBreaker
 from src.resilience.guarded import call_guarded
 from src.utils.regex_safe import escape_mongo_regex
 from src.security.mongo_safe import coerce_safe_string
+from src.services.user_service import UserService
 
 # Shared breaker state (lives in Redis — see circuit_breaker.py) for every
 # outbound Razorpay call made from this service.
@@ -74,9 +75,8 @@ class OrderService:
         # Non-unique — list_by_email/account "my orders" lookups filter on
         # this the same way list_by_phone does on shipping_address.phone.
         await orders_collection.create_index("user_email")
-        # Sparse — most orders are guest checkouts with no user_id at all;
-        # this is the strongest "my orders" match, used when the customer
-        # was logged in (verified session) at checkout time.
+        # Sparse — leftover guest orders from before checkout started
+        # attaching a captured user_id; still the strongest "my orders" match.
         await orders_collection.create_index("user_id", sparse=True)
         await logs_collection.create_index("order_id", unique=True)
         await order_ledger.ensure_indexes()
@@ -508,11 +508,13 @@ class OrderService:
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
         raw_order_log["fraud_decision"] = decision.model_dump()
-        
+
+        user_id = await self._attach_checkout_account(order_data)
+
         # Convert to dict for MongoDB
         order_dict = {
             "order_id": order_id,
-            "user_id": order_data.user_id,
+            "user_id": user_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],
@@ -1039,6 +1041,27 @@ class OrderService:
         
         pricing = self._recalculate_pricing(validated_items)
         return validated_items, pricing
+
+    async def _attach_checkout_account(self, order_data: OrderCreateInput) -> Optional[str]:
+        addr = order_data.shippingAddress
+        try:
+            captured = await UserService().capture_from_checkout(
+                full_name=addr.full_name,
+                phone=addr.phone,
+                email=order_data.userEmail or addr.email or "",
+                address_line1=addr.address_line1,
+                address_line2=addr.address_line2 or "",
+                city=addr.city,
+                state=addr.state or "",
+                postal_code=addr.postal_code,
+                country=addr.country,
+                existing_user_id=order_data.user_id,
+            )
+        except Exception as e:
+            if logger:
+                logger.warning(f"Checkout account capture failed: {e}")
+            return order_data.user_id
+        return captured or order_data.user_id
     
     async def initiate_order(
         self, order_data: OrderCreateInput, ip: Optional[str] = None
@@ -1069,11 +1092,13 @@ class OrderService:
         raw_order_log["order_id"] = order_id
         raw_order_log["received_at"] = datetime.utcnow().isoformat()
         raw_order_log["fraud_decision"] = decision.model_dump()
-        
+
+        user_id = await self._attach_checkout_account(order_data)
+
         # Convert to dict for Redis storage
         order_dict = {
             "order_id": order_id,
-            "user_id": order_data.user_id,
+            "user_id": user_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],

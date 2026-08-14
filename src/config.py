@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     smtp_from: Optional[str] = Field(default=None, env="SMTP_FROM")
     # Base URL of the deployed storefront — used to build absolute links
     # (order tracking, "view your order") inside outgoing emails.
-    frontend_url: str = Field(default="https://chokmoki.com", env="FRONTEND_URL")
+    frontend_url: str = Field(default="https://www.chokmoki.com", env="FRONTEND_URL")
     email_otp_expiry_seconds: int = Field(default=300, env="EMAIL_OTP_EXPIRY_SECONDS")
     email_otp_length: int = Field(default=6, env="EMAIL_OTP_LENGTH")
 

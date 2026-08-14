@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,25 +10,12 @@ from src.config import settings
 from src.models.user import CustomerAuthTokens, CustomerPrincipal, User
 from src.plugins.logger import logger
 from src.services.customer_session_service import CustomerSessionService
-from src.services.otp_channel import EmailOtpChannel, Msg91OtpChannel, OtpChannel
-from src.services.user_service import UserService, normalize_email, normalize_phone
-
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def identifier_type(identifier: str) -> str:
-    """'phone' if it normalizes to a 10-digit Indian mobile number,
-    otherwise 'email' — same shape auth.py's OtpRequestPayload validator
-    already enforces at the request boundary.
-    """
-    if len(normalize_phone(identifier)) == 10:
-        return "phone"
-    return "email"
+from src.services.otp_channel import EmailOtpChannel, OtpChannel
+from src.services.user_service import UserService, normalize_email
 
 
 class CustomerAuthService:
-    """Phone+OTP (MSG91) or email+OTP (Brevo) login, picked per request by
-    identifier shape. Mirrors AdminAuthService's JWT shape (python-jose
+    """Email+OTP (Brevo) login. Mirrors AdminAuthService's JWT shape (python-jose
     HS256 access token + opaque Redis-backed refresh token) but under
     distinct `type` claims so a customer token can never be replayed
     against an admin route, even though both share JWT_SECRET/algorithm.
@@ -39,8 +25,8 @@ class CustomerAuthService:
         self.sessions = CustomerSessionService()
         self.users = UserService()
 
-    def _channel(self, identifier: str) -> OtpChannel:
-        return Msg91OtpChannel() if identifier_type(identifier) == "phone" else EmailOtpChannel()
+    def _channel(self) -> OtpChannel:
+        return EmailOtpChannel()
 
     def _decode_token(self, token: str) -> Optional[dict]:
         secrets_to_try = [settings.jwt_secret]
@@ -67,24 +53,17 @@ class CustomerAuthService:
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
     async def request_otp(self, identifier: str) -> bool:
-        if identifier_type(identifier) == "phone":
-            identifier = normalize_phone(identifier)
-        else:
-            identifier = normalize_email(identifier)
-        return await self._channel(identifier).send_otp(identifier)
+        identifier = normalize_email(identifier)
+        return await self._channel().send_otp(identifier)
 
     async def verify_otp_and_login(self, identifier: str, otp: str) -> Optional[tuple[User, CustomerAuthTokens]]:
-        kind = identifier_type(identifier)
-        identifier = normalize_phone(identifier) if kind == "phone" else normalize_email(identifier)
+        identifier = normalize_email(identifier)
 
-        ok = await self._channel(identifier).verify_otp(identifier, otp)
+        ok = await self._channel().verify_otp(identifier, otp)
         if not ok:
             return None
 
-        if kind == "phone":
-            user = await self.users.get_or_create_by_phone(identifier)
-        else:
-            user = await self.users.get_or_create_by_email(identifier)
+        user = await self.users.get_or_create_by_email(identifier)
 
         session_id, refresh_token = await self.sessions.create_session(
             user.id, phone=user.phone or "", email=user.email or ""
