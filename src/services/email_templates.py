@@ -10,15 +10,24 @@ if TYPE_CHECKING:
 BRAND_COLOR = "#0f0f0f"
 ACCENT_COLOR = "#b8860b"  # muted gold, matches jewellery brand positioning
 
+# Keys must exactly match Order.shipment_status literal values
+# (src/models/order.py) — that field (not OrderStatus.type) is what
+# ShiprocketService._apply_status_update actually publishes on every real
+# transition. "pending" (the initial default) is intentionally omitted —
+# it's never itself a transition, it's the starting state before the first
+# one arrives.
 SHIPMENT_STATUS_COPY = {
-    "shipped": ("Your order has shipped", "Your order is on its way."),
+    "awb_assigned": ("Your order is being prepared for pickup", "A courier has been assigned to your order."),
+    "pickup_scheduled": ("Pickup scheduled for your order", "Your courier pickup has been scheduled."),
     "picked_up": ("Your order has been picked up", "Your courier has picked up your order."),
     "in_transit": ("Your order is on its way", "Your order is currently in transit."),
     "out_for_delivery": ("Your order is out for delivery", "Your order will arrive today."),
     "delivered": ("Your order has been delivered", "Your order has been delivered. We hope you love it!"),
-    "cancelled": ("Your order was cancelled", "Your order has been cancelled."),
-    "rejected": ("Your order was cancelled", "Your order could not be fulfilled."),
     "rto_initiated": ("Your order is being returned", "Your order is being returned to us."),
+    "rto_delivered": ("Your returned order has arrived back with us", "Your returned order has arrived back with us."),
+    "cancellation_requested": ("Your order cancellation is being processed", "We've received your cancellation request and are processing it."),
+    "cancelled": ("Your order was cancelled", "Your order has been cancelled."),
+    "failed": ("There's an issue with your delivery", "We ran into a delivery issue with your order — our team will be in touch."),
 }
 
 

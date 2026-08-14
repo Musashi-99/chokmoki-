@@ -84,11 +84,22 @@ async def main() -> None:
     await InventoryService().ensure_indexes()
 
     tasks: list[asyncio.Task] = []
-    if settings.telegram_enabled:
+    # This consumer drives every customer notification (order-confirmation
+    # and status-update emails via Brevo, lifecycle SMS via MSG91) as well
+    # as internal Telegram alerts — it must run whenever ANY of those
+    # channels is enabled, not just Telegram. Previously gated on
+    # telegram_enabled alone, which meant every other channel silently
+    # never fired at all with Telegram off (each handler already no-ops
+    # gracefully for its own disabled channel, so running this unconditionally
+    # is safe even with everything disabled).
+    if settings.telegram_enabled or settings.msg91_enabled or settings.email_enabled:
         tasks.append(asyncio.create_task(AlertConsumer().run(), name="alert_consumer"))
     else:
         if logger:
-            logger.info("Worker: Telegram alerts disabled (TELEGRAM_ENABLED=false), skipping AlertConsumer")
+            logger.info(
+                "Worker: no notification channel enabled (Telegram/MSG91/email all off), "
+                "skipping AlertConsumer"
+            )
 
     # Unconditional — core payment processing, not an optional notification.
     tasks.append(asyncio.create_task(OrderEventConsumer().run(), name="order_event_consumer"))

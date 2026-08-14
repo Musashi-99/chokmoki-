@@ -164,6 +164,23 @@ async def _send_order_email(order_id: str, kind: str, status: Optional[str] = No
             logger.error(f"Order email '{kind}' failed for order {order_id}: {e}")
 
 
+async def _send_to_channel(channel: NotificationChannel, text: str, label: str) -> None:
+    """Every handler below only has ops-facing side effects left to do here
+    (customer-facing SMS/email already happened, independently, above) — a
+    disabled Telegram channel is a deliberate config choice, not a failure,
+    so it must NOT raise (that would mark the whole stream event as failed
+    and trigger a redelivery, which would re-run everything above it too —
+    including re-sending the customer's order-confirmation/status email on
+    every retry, for as long as Telegram stays off). Only an ACTUALLY
+    enabled channel failing to send is worth raising/retrying over.
+    """
+    if not channel.is_enabled():
+        return
+    sent = await channel.send(text)
+    if not sent:
+        raise RuntimeError(f"{label} channel send failed")
+
+
 async def _send_lifecycle_sms(
     sms_channel: Optional[SmsChannel], template_key: str, payload: Dict[str, Any]
 ) -> None:
@@ -206,9 +223,7 @@ class OrderCreatedHandler(AlertHandler):
         order_id = event.payload.get("order_id")
         if order_id:
             await _send_order_email(order_id, "confirmation")
-        sent = await self._channel.send(_format_order_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Order alert channel send failed")
+        await _send_to_channel(self._channel, _format_order_alert(event.payload), "Order alert")
         return True
 
 
@@ -221,9 +236,7 @@ class SettingsChangedHandler(AlertHandler):
         return event.type == EVENT_ADMIN_MUTATION and event.payload.get("resource") in SETTINGS_RESOURCES
 
     async def _process(self, event: AlertEvent) -> bool:
-        sent = await self._channel.send(_format_settings_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Settings alert channel send failed")
+        await _send_to_channel(self._channel, _format_settings_alert(event.payload), "Settings alert")
         return True
 
 
@@ -236,9 +249,7 @@ class PriceChangedHandler(AlertHandler):
         return event.type == EVENT_PRODUCT_PRICE_CHANGED
 
     async def _process(self, event: AlertEvent) -> bool:
-        sent = await self._channel.send(_format_price_changed_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Price-change alert channel send failed")
+        await _send_to_channel(self._channel, _format_price_changed_alert(event.payload), "Price-change alert")
         return True
 
 
@@ -251,9 +262,7 @@ class ContactSubmittedHandler(AlertHandler):
         return event.type == EVENT_CONTACT_SUBMITTED
 
     async def _process(self, event: AlertEvent) -> bool:
-        sent = await self._channel.send(_format_contact_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Contact alert channel send failed")
+        await _send_to_channel(self._channel, _format_contact_alert(event.payload), "Contact alert")
         return True
 
 
@@ -266,9 +275,7 @@ class NewsletterSubscribedHandler(AlertHandler):
         return event.type == EVENT_NEWSLETTER_SUBSCRIBED
 
     async def _process(self, event: AlertEvent) -> bool:
-        sent = await self._channel.send(_format_newsletter_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Newsletter alert channel send failed")
+        await _send_to_channel(self._channel, _format_newsletter_alert(event.payload), "Newsletter alert")
         return True
 
 
@@ -302,9 +309,7 @@ class ShipmentUpdateHandler(AlertHandler):
         order_id = event.payload.get("order_id")
         if order_id and status:
             await _send_order_email(order_id, "status", status)
-        sent = await self._channel.send(_format_shipment_alert(event.payload))
-        if not sent:
-            raise RuntimeError("Shipment alert channel send failed")
+        await _send_to_channel(self._channel, _format_shipment_alert(event.payload), "Shipment alert")
         return True
 
 
@@ -334,9 +339,7 @@ class SystemErrorHandler(AlertHandler):
         return event.type == EVENT_SYSTEM_ERROR
 
     async def _process(self, event: AlertEvent) -> bool:
-        sent = await self._channel.send(_format_system_error_alert(event.payload))
-        if not sent:
-            raise RuntimeError("System error alert channel send failed")
+        await _send_to_channel(self._channel, _format_system_error_alert(event.payload), "System error alert")
         return True
 
 
