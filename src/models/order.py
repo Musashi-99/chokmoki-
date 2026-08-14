@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from bson import ObjectId
 from datetime import datetime
 from src.models.product import PyObjectId
+from src.models.coupon import AppliedDiscount
 from src.models.shipping_address import ShippingAddress as ShippingAddressModel
 
 
@@ -47,6 +48,7 @@ class OrderCreateInput(BaseModel):
     userEmail: str
     timestamp: str
     paymentMethod: Optional[Literal["razorpay", "cod"]] = "cod"
+    couponCode: Optional[str] = None
     # Set server-side only (api/routes/orders.py resolves it from the
     # customer auth cookie, if present) — never trust a client-supplied
     # value here, or anyone could claim someone else's account on an order.
@@ -115,6 +117,7 @@ class Order(BaseModel):
     discount: float
     shipping: float
     total_amount: float
+    applied_discount: Optional[AppliedDiscount] = None
     payment_method: Optional[Literal["razorpay", "cod"]] = "cod"
     payment_status: Optional[Literal["pending", "completed", "failed"]] = None
     razorpay_order_id: Optional[str] = None

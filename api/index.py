@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI):
             except Exception as idx_err:
                 if logger:
                     logger.warning(f"Customer/SMS index setup skipped: {idx_err}")
+            try:
+                from src.services.discount_service import CouponService
+
+                await CouponService().ensure_indexes()
+            except Exception as idx_err:
+                if logger:
+                    logger.warning(f"Coupon index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting
@@ -131,6 +138,7 @@ from api.routes import (
     admin_backup,
     admin_catalog,
     admin_content,
+    admin_coupons,
     admin_fraud,
     admin_import,
     admin_inbox,
@@ -141,6 +149,7 @@ from api.routes import (
     admin_upload,
     auth,
     contact,
+    coupons,
     cqrs,
     cron,
     health,
@@ -155,6 +164,7 @@ app.include_router(storefront.router)
 app.include_router(pincode.router)
 app.include_router(contact.router)
 app.include_router(orders.router)
+app.include_router(coupons.router)
 app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(admin_auth.router)
@@ -164,6 +174,7 @@ app.include_router(admin_backup.router)
 app.include_router(admin_orders_backup.router)
 app.include_router(admin_orders.router)
 app.include_router(admin_catalog.router)
+app.include_router(admin_coupons.router)
 app.include_router(admin_content.router)
 app.include_router(admin_inbox.router)
 app.include_router(admin_fraud.router)
