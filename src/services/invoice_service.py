@@ -392,7 +392,12 @@ class InvoiceService:
         elif show_tax:
             y = total_line(f"IGST @ {self._fmt_rate(settings.gst_total_percent)}%:", f"Rs. {igst_total:.2f}", y)
         if discount:
-            y = total_line("Discount:", f"- Rs. {discount:.2f}", y)
+            label = "Discount:"
+            snap = order_doc.get("applied_discount") or {}
+            code = snap.get("code") if isinstance(snap, dict) else getattr(snap, "code", None)
+            if code:
+                label = f"Discount ({code}):"
+            y = total_line(label, f"- Rs. {discount:.2f}", y)
         if shipping:
             y = total_line("Shipping:", f"Rs. {shipping:.2f}", y)
         y = total_line("GRAND TOTAL:", f"Rs. {grand_total:.2f}", y, bold=True)
