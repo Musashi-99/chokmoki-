@@ -31,3 +31,19 @@ async def require_customer_auth(
     principal: CustomerPrincipal = Depends(resolve_customer_principal),
 ) -> CustomerPrincipal:
     return principal
+
+
+async def resolve_customer_principal_optional(
+    request: Request,
+    access_cookie: Optional[str] = Cookie(None, alias=ACCESS_COOKIE),
+) -> Optional[CustomerPrincipal]:
+    """Never raises — returns None for guests/missing/expired sessions.
+    Used by endpoints (checkout) that must keep working anonymously but
+    should still link the order to an account when one is logged in.
+    """
+    if not access_cookie:
+        return None
+    principal = await CustomerAuthService().verify_access_token(access_cookie)
+    if principal:
+        request.state.customer_principal = principal
+    return principal

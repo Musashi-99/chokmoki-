@@ -1,5 +1,5 @@
 """Order creation (public) and the Razorpay payment webhook."""
-from fastapi import APIRouter, HTTPException, Request, Header
+from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, Optional
 import json
@@ -17,6 +17,8 @@ from api.bootstrap import (
 )
 from api.json_utils import JSONEncoder
 
+from src.models.user import CustomerPrincipal
+from src.plugins.customer_deps import resolve_customer_principal_optional
 from src.security.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
@@ -59,10 +61,19 @@ async def api_lookup_orders(payload: Dict[str, Any]):
 
 
 @router.post("/api/orders")
-async def api_create_order(request: Request, payload: Dict[str, Any]):
-    """Create a new order (public endpoint)."""
+async def api_create_order(
+    request: Request,
+    payload: Dict[str, Any],
+    principal: Optional[CustomerPrincipal] = Depends(resolve_customer_principal_optional),
+):
+    """Create a new order (public endpoint — checkout stays guest-friendly;
+    if a valid customer session cookie is present, the order additionally
+    gets a hard user_id link, on top of the phone/email it always stores).
+    """
     if OrderService is None or OrderCreateInput is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    payload["user_id"] = principal.user_id if principal else None
 
     idem_key = request.headers.get("Idempotency-Key") or payload.get("idempotencyKey")
     if (
@@ -128,7 +139,11 @@ async def api_create_order(request: Request, payload: Dict[str, Any]):
 
 
 @router.post("/api/orders/initiate")
-async def api_initiate_order(request: Request, payload: Dict[str, Any]):
+async def api_initiate_order(
+    request: Request,
+    payload: Dict[str, Any],
+    principal: Optional[CustomerPrincipal] = Depends(resolve_customer_principal_optional),
+):
     """Start a Razorpay (Checkout.js) order: reserve inventory, create the
     Razorpay order, store the pending order in Redis. Returns order_id
     immediately — the customer's order_id is known and screenshot-able
@@ -136,6 +151,8 @@ async def api_initiate_order(request: Request, payload: Dict[str, Any]):
     """
     if OrderService is None or OrderCreateInput is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    payload["user_id"] = principal.user_id if principal else None
 
     idem_key = request.headers.get("Idempotency-Key") or payload.get("idempotencyKey")
     if (

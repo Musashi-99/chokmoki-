@@ -74,6 +74,10 @@ class OrderService:
         # Non-unique — list_by_email/account "my orders" lookups filter on
         # this the same way list_by_phone does on shipping_address.phone.
         await orders_collection.create_index("user_email")
+        # Sparse — most orders are guest checkouts with no user_id at all;
+        # this is the strongest "my orders" match, used when the customer
+        # was logged in (verified session) at checkout time.
+        await orders_collection.create_index("user_id", sparse=True)
         await logs_collection.create_index("order_id", unique=True)
         await order_ledger.ensure_indexes()
 
@@ -508,6 +512,7 @@ class OrderService:
         # Convert to dict for MongoDB
         order_dict = {
             "order_id": order_id,
+            "user_id": order_data.user_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],
@@ -800,6 +805,16 @@ class OrderService:
             return []
         return await self._list_by_field("user_email", email, limit)
 
+    async def list_by_user_id(self, user_id: str, limit: int = 50) -> List[Order]:
+        """Strongest "my orders" match — the order was placed while this
+        exact account's session was verified at checkout, not just guessed
+        by matching phone/email text.
+        """
+        user_id = coerce_safe_string(user_id, "user_id").strip()
+        if not user_id:
+            return []
+        return await self._list_by_field("user_id", user_id, limit)
+
     async def _list_by_field(self, field: str, value: str, limit: int) -> List[Order]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
@@ -1058,6 +1073,7 @@ class OrderService:
         # Convert to dict for Redis storage
         order_dict = {
             "order_id": order_id,
+            "user_id": order_data.user_id,
             "user_email": order_data.userEmail,
             "shipping_address": order_data.shippingAddress.model_dump(),
             "items": [item.model_dump() for item in validated_items],

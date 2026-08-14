@@ -5,8 +5,20 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
+
 from src.database.connection import db
 from src.models.user import Address, AddressInput, User, UserProfileUpdate
+
+
+class ProfileConflictError(Exception):
+    """Raised when a profile update's phone/email is already claimed by a
+    different account — surfaced as a 409, not a raw 500.
+    """
+
+    def __init__(self, field: str):
+        self.field = field
+        super().__init__(f"This {field} is already linked to another account")
 
 COLLECTION_NAME = "users"
 
@@ -106,8 +118,21 @@ class UserService:
         patch = {k: v for k, v in update.model_dump(exclude_unset=True).items()}
         if not patch:
             return await self.get_by_id(user_id)
+        if "phone" in patch and patch["phone"]:
+            patch["phone"] = normalize_phone(patch["phone"])
+        if "email" in patch and patch["email"]:
+            patch["email"] = normalize_email(patch["email"])
         patch["updated_at"] = datetime.utcnow()
-        await collection.update_one({"id": user_id}, {"$set": patch})
+        try:
+            await collection.update_one({"id": user_id}, {"$set": patch})
+        except DuplicateKeyError as e:
+            # e.details["keyPattern"] tells us which unique index (phone_1 or
+            # email_1) collided — surfaced so the caller can show "that
+            # phone/email is already linked to another account" instead of a
+            # generic 500.
+            key_pattern = (getattr(e, "details", None) or {}).get("keyPattern") or {}
+            field = "phone" if "phone" in key_pattern else "email" if "email" in key_pattern else "field"
+            raise ProfileConflictError(field) from e
         return await self.get_by_id(user_id)
 
     async def add_address(self, user_id: str, payload: AddressInput) -> Optional[User]:

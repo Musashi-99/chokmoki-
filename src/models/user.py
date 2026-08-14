@@ -64,6 +64,11 @@ class User(BaseModel):
 class UserProfileUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
+    # Unverified — no MSG91 OTP check yet (see UserService.update_profile).
+    # Once MSG91 is live this becomes a real second identifier the same way
+    # email already is; for now it's just profile data so an email-login
+    # account can still be reached/matched by phone on an order.
+    phone: Optional[str] = None
 
 
 @dataclass(frozen=True)

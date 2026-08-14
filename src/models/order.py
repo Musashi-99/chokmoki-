@@ -47,6 +47,10 @@ class OrderCreateInput(BaseModel):
     userEmail: str
     timestamp: str
     paymentMethod: Optional[Literal["razorpay", "cod"]] = "cod"
+    # Set server-side only (api/routes/orders.py resolves it from the
+    # customer auth cookie, if present) — never trust a client-supplied
+    # value here, or anyone could claim someone else's account on an order.
+    user_id: Optional[str] = None
 
 
 class ValidatedOrderItem(BaseModel):
@@ -99,6 +103,10 @@ class ShippingAddressInOrder(BaseModel):
 class Order(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     order_id: str
+    # Strongest link to an account — set when the customer was logged in
+    # (verified session) at checkout. None for guest orders, which only
+    # match by email/phone.
+    user_id: Optional[str] = None
     user_email: str
     shipping_address: ShippingAddressInOrder  # Changed from Dict to DTO
     items: List[ValidatedOrderItem]
