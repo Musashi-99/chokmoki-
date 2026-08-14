@@ -10,9 +10,11 @@ from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder
 from src.models.common import PricingDTO
+from src.models.coupon import AppliedDiscount
 from src.models.dto import OrderInitiateResponseDTO, OrderLogDTO
 from src.models.product import Product
 from src.services.product_service import ProductService
+from src.services.discount_service import DiscountService
 from src.services.inventory_service import InventoryService
 from src.services.razorpay_service import RazorpayService
 from src.services import order_ledger
@@ -482,7 +484,7 @@ class OrderService:
         if order_data.paymentMethod == "razorpay":
             raise ValueError("Use initiate_order for razorpay payments")
 
-        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
             event_type="order_create",
@@ -529,6 +531,8 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
 
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
@@ -615,12 +619,18 @@ class OrderService:
                 )
             )
 
-        subtotal = float(payload.get("subtotal", sum(i.total_price for i in validated_items)))
         shipping = max(0.0, float(payload.get("shipping", 0)))
-        discount = max(0.0, float(payload.get("discount", 0)))
-        total_amount = float(
-            payload.get("total_amount", max(0.0, subtotal + shipping - discount))
-        )
+        subtotal = sum(i.total_price for i in validated_items)
+        discount = 0.0
+        total_amount = subtotal + shipping
+        applied = None
+        code = (payload.get("coupon_code") or payload.get("couponCode") or "").strip()
+        if code:
+            pricing, applied = await DiscountService().apply(code, validated_items, shipping)
+            subtotal = pricing.subtotal
+            discount = pricing.discount
+            shipping = pricing.shipping
+            total_amount = pricing.total
 
         payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
         payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
@@ -677,6 +687,8 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log,
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
 
         if payment_status == "completed":
             inventory_service = InventoryService()
@@ -999,7 +1011,7 @@ class OrderService:
         return await order_ledger.get_events(order_id)
 
 
-    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO]:
+    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO, Optional[AppliedDiscount]]:
         """Validate order items and recalculate pricing - shared logic"""
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
@@ -1038,7 +1050,11 @@ class OrderService:
             ))
         
         pricing = self._recalculate_pricing(validated_items)
-        return validated_items, pricing
+        applied = None
+        code = (order_data.couponCode or "").strip()
+        if code:
+            pricing, applied = await DiscountService().apply(code, validated_items, pricing.shipping)
+        return validated_items, pricing, applied
     
     async def initiate_order(
         self, order_data: OrderCreateInput, ip: Optional[str] = None
@@ -1047,7 +1063,7 @@ class OrderService:
         if order_data.paymentMethod != "razorpay":
             raise ValueError("initiate_order only supports razorpay payment method")
 
-        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
             event_type="order_initiate",
@@ -1088,6 +1104,8 @@ class OrderService:
             "created_at": datetime.utcnow().isoformat(),
             "raw_order_log": raw_order_log
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
         
         redis = await redis_client.get_client()
         redis_key = f"pending_order:{order_id}"

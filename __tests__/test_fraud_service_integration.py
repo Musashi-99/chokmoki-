@@ -66,7 +66,7 @@ async def test_order_create_rejected_by_fraud(monkeypatch):
     service = OrderService()
 
     with patch("src.services.order_service.FraudDetectionService.evaluate", new_callable=AsyncMock, return_value=reject_decision):
-        with patch.object(service, "_validate_and_prepare_order", new_callable=AsyncMock, return_value=([], type("P", (), {"subtotal": 0, "discount": 0, "shipping": 0, "total": 100})())):
+        with patch.object(service, "_validate_and_prepare_order", new_callable=AsyncMock, return_value=([], type("P", (), {"subtotal": 0, "discount": 0, "shipping": 0, "total": 100})(), None)):
             with pytest.raises(ValueError):
                 await service.create(order_data)
 
