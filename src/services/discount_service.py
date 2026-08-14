@@ -1,4 +1,6 @@
+from collections.abc import Sequence
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any
 
 from src.models.coupon import DiscountIndicator, DiscountType
 
@@ -13,7 +15,11 @@ def _attr(obj, name):
     return getattr(obj, name)
 
 
-def compute_discount(items, coupon, shipping=0):
+def compute_discount(
+    items: Sequence[Any],
+    coupon: Any,
+    shipping: float = 0,
+) -> tuple[float, float, float]:
     subtotal = money(sum(_attr(item, "total_price") for item in items))
     coupon_type = _attr(coupon, "type")
     indicator = _attr(coupon, "indicator")
@@ -39,5 +45,11 @@ def compute_discount(items, coupon, shipping=0):
 
 
 class DiscountService:
-    def compute(self, items, coupon, shipping=0):
+    # apply/lookup is added in a later task
+    def compute(
+        self,
+        items: Sequence[Any],
+        coupon: Any,
+        shipping: float = 0,
+    ) -> tuple[float, float, float]:
         return compute_discount(items, coupon, shipping)

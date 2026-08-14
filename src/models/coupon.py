@@ -1,9 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import List, Optional
 
-from bson import ObjectId
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from src.models.product import PyObjectId
 from src.security.mass_assignment import StrictUpdateModel
@@ -34,14 +33,21 @@ class Coupon(BaseModel):
     indicator: DiscountIndicator
     product_id: Optional[str] = None
     active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,
-        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()},
     }
+
+    @field_serializer("id")
+    def serialize_id(self, value: Optional[PyObjectId]) -> Optional[str]:
+        return str(value) if value is not None else None
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_datetime(self, value: datetime) -> str:
+        return value.isoformat()
 
 
 class CouponCreate(BaseModel):
