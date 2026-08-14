@@ -11,10 +11,11 @@ for a year after first load and repeat traffic through this route is small.
 import asyncio
 
 from botocore.client import Config as BotoConfig
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from api.bootstrap import logger, settings
+from src.services.media_resize import resize_image_bytes
 
 router = APIRouter()
 
@@ -52,7 +53,7 @@ def _get_client():
 
 
 @router.get("/media/{key:path}")
-async def serve_media(key: str):
+async def serve_media(key: str, w: int | None = Query(default=None, ge=1, le=1920)):
     if settings is None or not settings.r2_account_id:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -78,6 +79,8 @@ async def serve_media(key: str):
 
     try:
         body, content_type, cache_control, etag = await asyncio.to_thread(fetch)
+        if w:
+            body, content_type = resize_image_bytes(body, content_type, w)
     except Exception as e:
         code = getattr(e, "response", {}).get("Error", {}).get("Code", "") if hasattr(e, "response") else ""
         if code in ("NoSuchKey", "404"):
