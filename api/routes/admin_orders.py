@@ -30,6 +30,7 @@ async def admin_list_orders(
     search: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    coupon: Optional[str] = None,
     email: str = Depends(require_admin),
 ):
     """List all orders for the admin dashboard with optional filtering."""
@@ -41,10 +42,12 @@ async def admin_list_orders(
         skip=skip, limit=limit,
         status=status, search=search,
         from_date=from_date, to_date=to_date,
+        coupon=coupon,
     )
     total = await service.count(
         status=status, search=search,
         from_date=from_date, to_date=to_date,
+        coupon=coupon,
     )
     return JSONResponse(content=json.loads(json.dumps({
         "data": [order.model_dump(by_alias=True) for order in orders],

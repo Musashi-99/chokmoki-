@@ -91,6 +91,21 @@ class TestComputeDiscount:
         assert computed == 200
         assert total == 3000
 
+    def test_krish20_cart_percent_on_2000(self):
+        items = [_item("p1", 2000)]
+        computed, total, subtotal = compute_discount(items, _cart_percent(20, "KRISH20"))
+        assert subtotal == 2000
+        assert computed == 400
+        assert total == 1600
+
+    def test_product_id_string_matches_non_string(self):
+        items = [_item(123, 2000), _item("other", 3000)]
+        coupon = _product_coupon(10, DiscountIndicator.PERCENT, "123")
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 5000
+        assert computed == 200
+        assert total == 4800
+
     def test_product_not_in_items_raises(self):
         items = [_item("other", 3000)]
         coupon = _product_coupon(10, DiscountIndicator.PERCENT, "missing")
@@ -261,7 +276,7 @@ class TestDiscountServiceApply:
         items = [_item("p1", 2000)]
         coupon = _coupon(active=False)
         with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
-            with pytest.raises(ValueError, match="Invalid coupon"):
+            with pytest.raises(ValueError, match="Coupon is not active"):
                 await DiscountService().apply("SAVE10", items)
 
     @pytest.mark.asyncio
@@ -279,7 +294,25 @@ class TestDiscountServiceApply:
         assert applied.type == DiscountType.CART
         assert applied.amount == 10
         assert applied.indicator == DiscountIndicator.PERCENT
-        assert not hasattr(applied, "product_id") or "product_id" not in applied.model_dump()
+        assert applied.product_id is None
+
+    @pytest.mark.asyncio
+    async def test_product_coupon_snapshots_product_id(self):
+        items = [_item("match", 2000), _item("other", 3000)]
+        coupon = _coupon(
+            code="PROD10",
+            type=DiscountType.PRODUCT,
+            product_id="match",
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+        )
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            pricing, applied = await DiscountService().apply("PROD10", items)
+        assert pricing.discount == 200
+        assert pricing.total == 4800
+        assert applied is not None
+        assert applied.product_id == "match"
+        assert applied.type == DiscountType.PRODUCT
 
     @pytest.mark.asyncio
     async def test_product_miss_raises(self):

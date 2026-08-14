@@ -16,14 +16,17 @@ class OrderListQuery(CommandQuery):
         to_date = params.get("toDate")
         sort_order = params.get("sortOrder", -1)
         
+        coupon = params.get("coupon")
         orders = await service.list(
             skip=skip, limit=limit, user_email=user_email,
             status=status, search=search,
-            from_date=from_date, to_date=to_date, sort_order=sort_order
+            from_date=from_date, to_date=to_date, coupon=coupon,
+            sort_order=sort_order
         )
         total = await service.count(
             user_email=user_email, status=status,
-            search=search, from_date=from_date, to_date=to_date
+            search=search, from_date=from_date, to_date=to_date,
+            coupon=coupon,
         )
         return ListResponseDTO(
             data=[order.model_dump(by_alias=True) for order in orders],

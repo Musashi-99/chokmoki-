@@ -633,10 +633,10 @@ class OrderService:
                 )
             )
 
-        subtotal, shipping, discount, total_amount = self._admin_order_totals(
+        subtotal, shipping, _ignored_discount, total_amount = self._admin_order_totals(
             validated_items,
             payload.get("shipping", 0),
-            payload.get("discount", 0),
+            0,
         )
         applied = None
         code = (payload.get("coupon_code") or payload.get("couponCode") or "").strip()
@@ -646,6 +646,9 @@ class OrderService:
             discount = pricing.discount
             shipping = pricing.shipping
             total_amount = pricing.total
+        else:
+            discount = 0.0
+            total_amount = max(0.0, subtotal + shipping)
 
         payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
         payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
@@ -765,13 +768,16 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
         sort_order: int = -1,
     ) -> List[Order]:
         """List orders with optional filtering, search, and date range"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
-        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        query = self._build_order_query(
+            user_email, status, search, from_date, to_date, coupon
+        )
         cursor = collection.find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         orders_dict = await cursor.to_list(length=limit)
 
@@ -866,12 +872,15 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
     ) -> int:
         """Count orders matching the given filters"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
-        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        query = self._build_order_query(
+            user_email, status, search, from_date, to_date, coupon
+        )
         return await collection.count_documents(query)
 
     @staticmethod
@@ -895,6 +904,7 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
     ) -> dict:
         query: dict = {}
         if user_email is not None:
@@ -907,11 +917,15 @@ class OrderService:
             from_date = coerce_safe_string(from_date, "from_date")
         if to_date is not None:
             to_date = coerce_safe_string(to_date, "to_date")
+        if coupon is not None:
+            coupon = coerce_safe_string(coupon, "coupon")
 
         if user_email:
             query["user_email"] = user_email
         if status:
             query["status.type"] = status
+        if coupon:
+            query["applied_discount.code"] = coupon.upper()
         if search:
             safe = escape_mongo_regex(search)
             query["$or"] = [
@@ -919,6 +933,7 @@ class OrderService:
                 {"user_email": {"$regex": safe, "$options": "i"}},
                 {"shipping_address.full_name": {"$regex": safe, "$options": "i"}},
                 {"shipping_address.phone": {"$regex": safe, "$options": "i"}},
+                {"applied_discount.code": {"$regex": safe, "$options": "i"}},
             ]
         if from_date or to_date:
             date_filter: dict = {}

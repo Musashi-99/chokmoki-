@@ -12,6 +12,7 @@ from bson import ObjectId
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+os.environ["ENVIRONMENT"] = "development"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 os.environ.setdefault("REDIS_URL", "redis://localhost")
 os.environ.setdefault("RAZORPAY_KEY_ID", "rzp_test")
@@ -141,6 +142,13 @@ def order_pipeline_mocks(coupon=None, product=None):
         )
         stack.enter_context(
             patch(
+                "src.services.order_service.FraudDetectionService.evaluate",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(action="allow", model_dump=lambda: {}),
+            )
+        )
+        stack.enter_context(
+            patch(
                 "src.services.order_service.FraudEnrichmentService.mark_order_completed",
                 new_callable=AsyncMock,
             )
@@ -188,6 +196,7 @@ class TestOrderCouponPricing:
         assert doc["applied_discount"]["code"] == "SAVE10"
         assert order.applied_discount is not None
         assert order.applied_discount.code == "SAVE10"
+        assert order.applied_discount.product_id is None
         assert order.discount == expected_computed
         assert order.total_amount == expected_total
 
@@ -236,6 +245,32 @@ class TestOrderCouponPricing:
                 await OrderService().create(order_data)
 
         mocks.orders.insert_one.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_product_coupon_persists_product_id_on_snapshot(self):
+        coupon = _product_coupon(product_id="p1")
+        order_data = OrderCreateInput(**_order_payload(couponCode="PROD10"))
+
+        with order_pipeline_mocks(coupon=coupon) as mocks:
+            order = await OrderService().create(order_data)
+
+        doc = mocks.orders.insert_one.call_args.args[0]
+        assert doc["applied_discount"]["code"] == "PROD10"
+        assert doc["applied_discount"]["product_id"] == "p1"
+        assert doc["discount"] == 200
+        assert order.applied_discount.product_id == "p1"
+
+    @pytest.mark.asyncio
+    async def test_admin_create_ignores_top_level_discount_without_code(self):
+        with order_pipeline_mocks(coupon=None) as mocks:
+            await OrderService().create_from_admin(
+                {**_order_payload(), "discount": 9999}
+            )
+
+        doc = mocks.orders.insert_one.call_args.args[0]
+        assert "applied_discount" not in doc
+        assert doc["discount"] == 0
+        assert doc["total_amount"] == 2000
 
     @pytest.mark.asyncio
     async def test_no_coupon_omits_applied_discount_and_zero_discount(self):
@@ -317,3 +352,19 @@ class TestOrderCouponPricing:
         assert pending["discount"] == 0
         assert pending["total_amount"] == 2000
         assert "applied_discount" not in pending
+
+
+class TestBuildOrderQueryCoupon:
+    def test_coupon_filter_uppercases_exact_code(self):
+        query = OrderService()._build_order_query(coupon="krish20")
+        assert query["applied_discount.code"] == "KRISH20"
+
+    def test_search_includes_coupon_code(self):
+        query = OrderService()._build_order_query(search="KRISH20")
+        fields = [clause for or_item in query["$or"] for clause in or_item]
+        assert "applied_discount.code" in fields
+
+    def test_coupon_and_search_and_together(self):
+        query = OrderService()._build_order_query(search="priya", coupon="KRISH20")
+        assert query["applied_discount.code"] == "KRISH20"
+        assert "$or" in query

@@ -23,6 +23,7 @@ class AppliedDiscount(BaseModel):
     type: DiscountType
     amount: float
     indicator: DiscountIndicator
+    product_id: Optional[str] = None
 
 
 class Coupon(BaseModel):

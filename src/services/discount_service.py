@@ -39,8 +39,10 @@ def compute_discount(
     amount = _attr(coupon, "amount")
 
     if coupon_type == DiscountType.PRODUCT:
-        product_id = _attr(coupon, "product_id")
-        matching = [item for item in items if _attr(item, "product_id") == product_id]
+        product_id = str(_attr(coupon, "product_id") or "")
+        matching = [
+            item for item in items if str(_attr(item, "product_id")) == product_id
+        ]
         if not matching:
             raise ValueError("Coupon does not apply to this cart")
         eligible = money(sum(_attr(item, "total_price") for item in matching))
@@ -84,8 +86,10 @@ class DiscountService:
             )
 
         coupon = await CouponService().get_by_code(code)
-        if coupon is None or not coupon.active:
+        if coupon is None:
             raise ValueError("Invalid coupon")
+        if not coupon.active:
+            raise ValueError("Coupon is not active")
 
         computed, total, subtotal = compute_discount(items, coupon, shipping)
         return (
@@ -100,6 +104,11 @@ class DiscountService:
                 type=coupon.type,
                 amount=coupon.amount,
                 indicator=coupon.indicator,
+                product_id=(
+                    coupon.product_id
+                    if coupon.type == DiscountType.PRODUCT
+                    else None
+                ),
             ),
         )
 
