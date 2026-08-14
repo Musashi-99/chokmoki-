@@ -143,6 +143,27 @@ class InventoryService:
             await collection.update_one(filt, {"$set": {"stock_status": "in_stock"}})
         return True
 
+    async def _sync_availability_status(self, product_id: str) -> None:
+        try:
+            stock_qty = await self._get_stock_qty(product_id)
+            if not self.tracks_inventory(stock_qty):
+                return
+            pending = await self._get_pending_qty(product_id)
+            available = int(stock_qty) - pending
+            database = await db.get_database()
+            collection = database[self.COLLECTION_NAME]
+            if ObjectId.is_valid(product_id):
+                filt: Dict[str, Any] = {"_id": ObjectId(product_id)}
+            else:
+                doc = await collection.find_one({"slug": product_id}, {"_id": 1})
+                if not doc:
+                    return
+                filt = {"_id": doc["_id"]}
+            status = "out_of_stock" if available <= 0 else "in_stock"
+            await collection.update_one(filt, {"$set": {"stock_status": status}})
+        except Exception as e:
+            logger.warning(f"Inventory availability status sync failed for {product_id}: {e}")
+
     async def _reserve_product(self, product_id: str, quantity: int) -> None:
         stock_qty = await self._get_stock_qty(product_id)
         if not self.tracks_inventory(stock_qty):
@@ -158,6 +179,7 @@ class InventoryService:
                 raise ValueError(f"Insufficient stock for product {product_id}")
 
             await self._adjust_pending_qty(product_id, quantity)
+            await self._sync_availability_status(product_id)
         finally:
             await self._release_product_lock(product_id)
 
@@ -304,7 +326,7 @@ class InventoryService:
 
         for line in lines:
             await self._adjust_pending_qty(line.product_id, -line.quantity)
-
+            await self._sync_availability_status(line.product_id)
         redis = await redis_client.get_client()
         await redis.delete(self._reservation_key(order_id))
         if from_mirror is None:

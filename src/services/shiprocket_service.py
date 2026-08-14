@@ -306,6 +306,11 @@ class ShiprocketService:
             if isinstance(order_date, datetime)
             else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         )
+        items = order_doc.get("items", [])
+        sub_total = sum(
+            float(item.get("unit_price") or 0) * int(item.get("quantity") or 1)
+            for item in items
+        )
         return {
             "order_id": order_doc["order_id"],
             "order_date": order_date_str,
@@ -345,10 +350,12 @@ class ShiprocketService:
                         else {}
                     ),
                 }
-                for item in order_doc.get("items", [])
+                for item in items
             ],
             "payment_method": payment_method,
-            "sub_total": order_doc.get("total_amount", 0),
+            "sub_total": sub_total,
+            "shipping_charges": float(order_doc.get("shipping") or 0),
+            "total_discount": float(order_doc.get("discount") or 0),
             "length": length_cm,
             "breadth": breadth_cm,
             "height": height_cm,

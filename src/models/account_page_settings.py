@@ -9,19 +9,19 @@ class AccountPageSettings(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     settings_key: str = "main"
     slide_1_kicker: str = "Since 1955"
-    slide_1_title: str = "Sterling silver from Kolkata."
+    slide_1_title: str = "Sterling silver, made to last."
     slide_1_body: str = (
-        "92.5 sterling from our family workshop in Birati. "
+        "92.5 hallmarked sterling, crafted by hand. "
         "Sign in or create an account with a one-time code."
     )
-    slide_2_kicker: str = "Since 1955"
-    slide_2_title: str = "Handcrafted in Birati."
+    slide_2_kicker: str = "Shipped across India"
+    slide_2_title: str = "Jewellery for every day."
     slide_2_body: str = (
-        "Four generations at the bench. Sign in to save pieces and pick up where you left off."
+        "Quiet pieces you keep. Sign in to save favourites and pick up where you left off."
     )
     slide_3_kicker: str = "92.5 sterling"
-    slide_3_title: str = "Made in our family workshop."
-    slide_3_body: str = "Every piece starts in Kolkata. A one-time code. No password."
+    slide_3_title: str = "Crafted for a lifetime."
+    slide_3_body: str = "Four generations at the bench. A one-time code. No password."
     interval_ms: int = 5000
     fade_ms: int = 400
     active: bool = True

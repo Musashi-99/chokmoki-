@@ -162,3 +162,12 @@ class TestRazorpayAmountVerification:
             "status": "captured",
         }
         assert service.verify_payment_amount("pay_123", 1500.0) is False
+
+
+class TestInrToPaise:
+    def test_rounds_instead_of_truncating(self):
+        from src.services.razorpay_service import inr_to_paise
+
+        assert inr_to_paise(1500) == 150000
+        assert inr_to_paise(1499.995) == 150000
+        assert inr_to_paise(10.126) == 1013

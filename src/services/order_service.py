@@ -10,9 +10,11 @@ from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder
 from src.models.common import PricingDTO
+from src.models.coupon import AppliedDiscount
 from src.models.dto import OrderInitiateResponseDTO, OrderLogDTO
 from src.models.product import Product
 from src.services.product_service import ProductService
+from src.services.discount_service import DiscountService
 from src.services.inventory_service import InventoryService
 from src.services.razorpay_service import RazorpayService
 from src.services import order_ledger
@@ -465,10 +467,10 @@ class OrderService:
     
     def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> PricingDTO:
         """Recalculate pricing from validated items - never trust user data"""
-        subtotal = sum(item.total_price for item in validated_items)
+        subtotal = float(sum(item.total_price for item in validated_items))
         discount = 0.0  # Can be calculated based on business logic
         shipping = 0.0  # Can be calculated based on shipping address
-        total = subtotal - discount + shipping
+        total = max(0.0, subtotal - discount + shipping)
         
         return PricingDTO(
             subtotal=subtotal,
@@ -476,13 +478,25 @@ class OrderService:
             shipping=shipping,
             total=total
         )
+
+    @staticmethod
+    def _admin_order_totals(
+        validated_items: List[ValidatedOrderItem],
+        shipping: float = 0,
+        discount: float = 0,
+    ) -> tuple[float, float, float, float]:
+        subtotal = float(sum(item.total_price for item in validated_items))
+        shipping = max(0.0, float(shipping or 0))
+        discount = max(0.0, float(discount or 0))
+        total = max(0.0, subtotal + shipping - discount)
+        return subtotal, shipping, discount, total
     
     async def create(self, order_data: OrderCreateInput, ip: Optional[str] = None) -> Order:
         """Create order with validation and recalculation (for COD)"""
         if order_data.paymentMethod == "razorpay":
             raise ValueError("Use initiate_order for razorpay payments")
 
-        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
             event_type="order_create",
@@ -531,6 +545,8 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
 
         result = await orders_collection.insert_one(order_dict)
         order_dict["_id"] = result.inserted_id
@@ -617,12 +633,22 @@ class OrderService:
                 )
             )
 
-        subtotal = float(payload.get("subtotal", sum(i.total_price for i in validated_items)))
-        shipping = max(0.0, float(payload.get("shipping", 0)))
-        discount = max(0.0, float(payload.get("discount", 0)))
-        total_amount = float(
-            payload.get("total_amount", max(0.0, subtotal + shipping - discount))
+        subtotal, shipping, _ignored_discount, total_amount = self._admin_order_totals(
+            validated_items,
+            payload.get("shipping", 0),
+            0,
         )
+        applied = None
+        code = (payload.get("coupon_code") or payload.get("couponCode") or "").strip()
+        if code:
+            pricing, applied = await DiscountService().apply(code, validated_items, shipping)
+            subtotal = pricing.subtotal
+            discount = pricing.discount
+            shipping = pricing.shipping
+            total_amount = pricing.total
+        else:
+            discount = 0.0
+            total_amount = max(0.0, subtotal + shipping)
 
         payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
         payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
@@ -679,6 +705,8 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log,
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
 
         if payment_status == "completed":
             inventory_service = InventoryService()
@@ -740,13 +768,16 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
         sort_order: int = -1,
     ) -> List[Order]:
         """List orders with optional filtering, search, and date range"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
-        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        query = self._build_order_query(
+            user_email, status, search, from_date, to_date, coupon
+        )
         cursor = collection.find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         orders_dict = await cursor.to_list(length=limit)
 
@@ -841,12 +872,15 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
     ) -> int:
         """Count orders matching the given filters"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
-        query = self._build_order_query(user_email, status, search, from_date, to_date)
+        query = self._build_order_query(
+            user_email, status, search, from_date, to_date, coupon
+        )
         return await collection.count_documents(query)
 
     @staticmethod
@@ -870,6 +904,7 @@ class OrderService:
         search: Optional[str] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        coupon: Optional[str] = None,
     ) -> dict:
         query: dict = {}
         if user_email is not None:
@@ -882,11 +917,15 @@ class OrderService:
             from_date = coerce_safe_string(from_date, "from_date")
         if to_date is not None:
             to_date = coerce_safe_string(to_date, "to_date")
+        if coupon is not None:
+            coupon = coerce_safe_string(coupon, "coupon")
 
         if user_email:
             query["user_email"] = user_email
         if status:
             query["status.type"] = status
+        if coupon:
+            query["applied_discount.code"] = coupon.upper()
         if search:
             safe = escape_mongo_regex(search)
             query["$or"] = [
@@ -894,6 +933,7 @@ class OrderService:
                 {"user_email": {"$regex": safe, "$options": "i"}},
                 {"shipping_address.full_name": {"$regex": safe, "$options": "i"}},
                 {"shipping_address.phone": {"$regex": safe, "$options": "i"}},
+                {"applied_discount.code": {"$regex": safe, "$options": "i"}},
             ]
         if from_date or to_date:
             date_filter: dict = {}
@@ -1001,7 +1041,7 @@ class OrderService:
         return await order_ledger.get_events(order_id)
 
 
-    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO]:
+    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO, Optional[AppliedDiscount]]:
         """Validate order items and recalculate pricing - shared logic"""
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
@@ -1040,7 +1080,11 @@ class OrderService:
             ))
         
         pricing = self._recalculate_pricing(validated_items)
-        return validated_items, pricing
+        applied = None
+        code = (order_data.couponCode or "").strip()
+        if code:
+            pricing, applied = await DiscountService().apply(code, validated_items, pricing.shipping)
+        return validated_items, pricing, applied
 
     async def _attach_checkout_account(self, order_data: OrderCreateInput) -> Optional[str]:
         addr = order_data.shippingAddress
@@ -1070,7 +1114,7 @@ class OrderService:
         if order_data.paymentMethod != "razorpay":
             raise ValueError("initiate_order only supports razorpay payment method")
 
-        validated_items, pricing = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
 
         fraud_ctx = FraudContext(
             event_type="order_initiate",
@@ -1113,6 +1157,8 @@ class OrderService:
             "created_at": datetime.utcnow().isoformat(),
             "raw_order_log": raw_order_log
         }
+        if applied is not None:
+            order_dict["applied_discount"] = applied.model_dump()
         
         redis = await redis_client.get_client()
         redis_key = f"pending_order:{order_id}"

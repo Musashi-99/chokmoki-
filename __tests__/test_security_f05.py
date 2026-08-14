@@ -338,7 +338,7 @@ class TestOrderServiceInventoryHooks:
         )
 
         with patch.object(
-            service, "_validate_and_prepare_order", new_callable=AsyncMock, return_value=(validated, pricing)
+            service, "_validate_and_prepare_order", new_callable=AsyncMock, return_value=(validated, pricing, None)
         ), patch(
             "src.services.order_service.FraudDetectionService.evaluate",
             new_callable=AsyncMock,
