@@ -19,9 +19,9 @@ from src.services.account_page_settings_service import AccountPageSettingsServic
 
 def test_account_page_defaults_include_three_slides_and_timing():
     settings = AccountPageSettings()
-    assert settings.slide_1_title == "Sterling silver from Kolkata."
-    assert settings.slide_2_title == "Handcrafted in Birati."
-    assert settings.slide_3_title == "Made in our family workshop."
+    assert settings.slide_1_title == "Sterling silver, made to last."
+    assert settings.slide_2_title == "Jewellery for every day."
+    assert settings.slide_3_title == "Crafted for a lifetime."
     assert settings.interval_ms == 5000
     assert settings.fade_ms == 400
 
@@ -80,13 +80,13 @@ async def test_upsert_then_public_returns_slides():
         await service.upsert(
             AccountPageSettingsUpdate(
                 slide_1_kicker="Since 1955",
-                slide_1_title="Sterling silver from Kolkata.",
-                slide_1_body="From Birati.",
+                slide_1_title="Sterling silver, made to last.",
+                slide_1_body="Hallmarked 92.5.",
                 interval_ms=3000,
                 fade_ms=400,
             )
         )
         public = await service.get_public()
-        assert public["slide_1_title"] == "Sterling silver from Kolkata."
+        assert public["slide_1_title"] == "Sterling silver, made to last."
         assert public["interval_ms"] == 3000
         assert public["fade_ms"] == 400

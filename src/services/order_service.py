@@ -467,10 +467,10 @@ class OrderService:
     
     def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> PricingDTO:
         """Recalculate pricing from validated items - never trust user data"""
-        subtotal = sum(item.total_price for item in validated_items)
+        subtotal = float(sum(item.total_price for item in validated_items))
         discount = 0.0  # Can be calculated based on business logic
         shipping = 0.0  # Can be calculated based on shipping address
-        total = subtotal - discount + shipping
+        total = max(0.0, subtotal - discount + shipping)
         
         return PricingDTO(
             subtotal=subtotal,
@@ -478,6 +478,18 @@ class OrderService:
             shipping=shipping,
             total=total
         )
+
+    @staticmethod
+    def _admin_order_totals(
+        validated_items: List[ValidatedOrderItem],
+        shipping: float = 0,
+        discount: float = 0,
+    ) -> tuple[float, float, float, float]:
+        subtotal = float(sum(item.total_price for item in validated_items))
+        shipping = max(0.0, float(shipping or 0))
+        discount = max(0.0, float(discount or 0))
+        total = max(0.0, subtotal + shipping - discount)
+        return subtotal, shipping, discount, total
     
     async def create(self, order_data: OrderCreateInput, ip: Optional[str] = None) -> Order:
         """Create order with validation and recalculation (for COD)"""
@@ -621,10 +633,11 @@ class OrderService:
                 )
             )
 
-        shipping = max(0.0, float(payload.get("shipping", 0)))
-        subtotal = sum(i.total_price for i in validated_items)
-        discount = 0.0
-        total_amount = subtotal + shipping
+        subtotal, shipping, discount, total_amount = self._admin_order_totals(
+            validated_items,
+            payload.get("shipping", 0),
+            payload.get("discount", 0),
+        )
         applied = None
         code = (payload.get("coupon_code") or payload.get("couponCode") or "").strip()
         if code:

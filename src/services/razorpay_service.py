@@ -8,6 +8,10 @@ from src.plugins.logger import logger
 from src.models.dto import RazorpayOrderResponseDTO
 
 
+def inr_to_paise(amount: float) -> int:
+    return int(round(float(amount or 0) * 100))
+
+
 class RazorpayService:
     def __init__(self):
         self.client = razorpay.Client(
@@ -18,7 +22,7 @@ class RazorpayService:
         """Create a Razorpay order"""
         try:
             order_data = {
-                "amount": int(amount * 100),
+                "amount": inr_to_paise(amount),
                 "currency": currency,
                 "notes": notes or {},
                 # Explicit auto-capture — without this, whether a successful
@@ -147,7 +151,7 @@ class RazorpayService:
         try:
             payment = self.client.payment.fetch(razorpay_payment_id)
             captured_paise = int(payment.get("amount") or 0)
-            expected_paise = int(round(expected_amount_inr * 100))
+            expected_paise = inr_to_paise(expected_amount_inr)
             if abs(captured_paise - expected_paise) > tolerance_paise:
                 logger.warning(
                     "Payment amount mismatch: expected %s paise, got %s paise",

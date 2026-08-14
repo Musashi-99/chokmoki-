@@ -38,8 +38,86 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from src.config import settings
 from src.database.connection import db
 
-COUNTERS_COLLECTION = "counters"
 ORDERS_COLLECTION = "orders"
+COUNTERS_COLLECTION = "counters"
+
+GST_STATE_CODES = {
+    "andaman and nicobar islands": "35",
+    "andhra pradesh": "37",
+    "arunachal pradesh": "12",
+    "assam": "18",
+    "bihar": "10",
+    "chandigarh": "04",
+    "chhattisgarh": "22",
+    "dadra and nagar haveli and daman and diu": "26",
+    "delhi": "07",
+    "nct of delhi": "07",
+    "new delhi": "07",
+    "goa": "30",
+    "gujarat": "24",
+    "haryana": "06",
+    "himachal pradesh": "02",
+    "jammu and kashmir": "01",
+    "jharkhand": "20",
+    "karnataka": "29",
+    "kerala": "32",
+    "ladakh": "38",
+    "lakshadweep": "31",
+    "madhya pradesh": "23",
+    "maharashtra": "27",
+    "manipur": "14",
+    "meghalaya": "17",
+    "mizoram": "15",
+    "nagaland": "13",
+    "odisha": "21",
+    "orissa": "21",
+    "puducherry": "34",
+    "pondicherry": "34",
+    "punjab": "03",
+    "rajasthan": "08",
+    "sikkim": "11",
+    "tamil nadu": "33",
+    "telangana": "36",
+    "tripura": "16",
+    "uttar pradesh": "09",
+    "uttarakhand": "05",
+    "uttaranchal": "05",
+    "west bengal": "19",
+    "wb": "19",
+    "tn": "33",
+    "mh": "27",
+    "ka": "29",
+    "gj": "24",
+    "up": "09",
+    "dl": "07",
+    "rj": "08",
+    "mp": "23",
+    "hr": "06",
+    "pb": "03",
+    "br": "10",
+    "od": "21",
+    "ts": "36",
+    "ap": "37",
+    "kl": "32",
+    "as": "18",
+    "jh": "20",
+    "ct": "22",
+    "cg": "22",
+    "uk": "05",
+    "ua": "05",
+    "hp": "02",
+    "ga": "30",
+}
+
+
+def _norm_state(value: str) -> str:
+    return " ".join(value.replace(".", "").strip().lower().split())
+
+
+def gst_state_code(value: str) -> str:
+    key = _norm_state(value)
+    return GST_STATE_CODES.get(key, "")
+
 
 DOC_TITLES = {
     "tax_invoice": "TAX INVOICE",
@@ -145,11 +223,15 @@ class InvoiceService:
     # ---- GST math -------------------------------------------------------
 
     def _is_intra_state(self, order_doc: Dict[str, Any]) -> bool:
-        customer_state = (
-            (order_doc.get("shipping_address") or {}).get("state") or ""
-        ).strip().lower()
-        seller_state = settings.invoice_seller_state.strip().lower()
-        return customer_state == seller_state
+        customer_state = (order_doc.get("shipping_address") or {}).get("state") or ""
+        seller_state = settings.invoice_seller_state
+        customer_code = gst_state_code(customer_state)
+        seller_code = (settings.invoice_seller_state_code or "").strip() or gst_state_code(
+            seller_state
+        )
+        if customer_code and seller_code:
+            return customer_code == seller_code
+        return _norm_state(customer_state) == _norm_state(seller_state)
 
     def _tax_lines(self, order_doc: Dict[str, Any], doc_type: str) -> List[Dict[str, Any]]:
         """Per-item rows with the GST-inclusive price decomposed into
@@ -172,6 +254,7 @@ class InvoiceService:
                 taxable = line_total
                 tax_amount = 0.0
             half = round(tax_amount / 2, 2)
+            remainder = round(tax_amount - half, 2)
             rows.append({
                 "name": item.get("product_name", "Item"),
                 "sku": item.get("product_id", ""),
@@ -180,7 +263,7 @@ class InvoiceService:
                 "unit_price": unit_price,
                 "taxable": taxable,
                 "cgst": half if (split_tax and intra) else 0.0,
-                "sgst": half if (split_tax and intra) else 0.0,
+                "sgst": remainder if (split_tax and intra) else 0.0,
                 "igst": tax_amount if (split_tax and not intra) else 0.0,
                 "total": line_total,
             })

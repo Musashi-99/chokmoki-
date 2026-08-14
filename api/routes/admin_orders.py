@@ -252,7 +252,19 @@ async def admin_get_stats(email: str = Depends(require_admin)):
     total_orders = await orders_collection.count_documents({})
 
     revenue_pipeline = [
-        {"$match": {"status.type": {"$nin": ["rejected", "rejected_by_user"]}}},
+        {
+            "$match": {
+                "payment_status": "completed",
+                "status.type": {
+                    "$nin": [
+                        "rejected",
+                        "rejected_by_user",
+                        "refunded",
+                        "refund_requested",
+                    ]
+                },
+            }
+        },
         {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}},
     ]
     revenue_result = await orders_collection.aggregate(revenue_pipeline).to_list(1)
