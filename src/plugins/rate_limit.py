@@ -12,6 +12,7 @@ from src.database.redis_connection import redis_client
 from src.plugins.rate_limit_config import (
     ResolvedRateLimit,
     load_rate_limit_rules,
+    match_rules,
     resolve_rate_limits,
 )
 from src.security.client_ip import get_client_ip, should_fail_closed_for_path
@@ -163,6 +164,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if path != "/" and not path.startswith("/api/"):
             return None, {}
+
+        # Peeking the body and rewiring request._receive to replay it is the
+        # one genuinely risky thing this middleware does — real-world
+        # traffic (HTTP/2 multiplexed browser clients through a proxy) has
+        # shown it can occasionally corrupt the body FastAPI's own handler
+        # reads afterwards, surfacing as "There was an error parsing the
+        # body" on requests that never even needed a body-derived rate
+        # limit (e.g. /api/auth/otp/verify, which only has an ip-scope
+        # fallback bucket). So only pay that cost on paths where some rule
+        # actually has an email-scope bucket that needs a body field — for
+        # everything else, skip entirely and let the body pass through
+        # completely untouched. The CQRS gateway ("/") still always reads
+        # the body since `operation` only exists inside it.
+        if path != "/":
+            matched = match_rules(self._rules, method=method, path=path, operation=None)
+            needs_body = any(bucket.scope == "email" for rule in matched for bucket in rule.buckets)
+            if not needs_body:
+                return None, {}
 
         try:
             body_bytes = await request.body()

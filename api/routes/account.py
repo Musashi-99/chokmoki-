@@ -98,4 +98,10 @@ async def list_my_orders(principal: CustomerPrincipal = Depends(require_customer
         merged.append(order)
     merged.sort(key=lambda o: o.created_at, reverse=True)
 
-    return [order.model_dump(by_alias=True) for order in merged]
+    # exclude "id" (aliased "_id"): it's a raw bson ObjectId with no
+    # pydantic-v2 serializer registered (only a validator — see
+    # PyObjectId in src/models/shipping_address.py), so jsonable_encoder
+    # can't serialize it and the whole response 500s. The frontend's
+    # CustomerOrder type never reads it, so just drop it rather than fix
+    # every model that reuses PyObjectId.
+    return [order.model_dump(by_alias=True, exclude={"id"}) for order in merged]
