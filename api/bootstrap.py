@@ -62,6 +62,7 @@ try:
     from src.services.inbox_service import InboxService
     from src.services.navigation_settings_service import NavigationSettingsService
     from src.services.contact_page_settings_service import ContactPageSettingsService
+    from src.services.account_page_settings_service import AccountPageSettingsService
     from src.services.history_page_settings_service import HistoryPageSettingsService
     from src.services.product_page_settings_service import ProductPageSettingsService
     from src.models.home_page_settings import HomePageSettingsUpdate
@@ -69,6 +70,7 @@ try:
     from src.models.blog_post import BlogPostCreate, BlogPostUpdate, JournalPageSettingsUpdate
     from src.models.navigation_settings import NavigationSettingsUpdate
     from src.models.contact_page_settings import ContactPageSettingsUpdate
+    from src.models.account_page_settings import AccountPageSettingsUpdate
     from src.models.history_page_settings import HistoryPageSettingsUpdate
     from src.models.product_page_settings import ProductPageSettingsUpdate
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
@@ -99,6 +101,7 @@ try:
     from src.models.sms_template import SmsTemplateUpdate
     from src.services.user_service import UserService
     from src.services.customer_auth_service import CustomerAuthService
+    from src.services.pincode_service import PincodeService
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -171,10 +174,12 @@ except Exception as e:
     JournalPageSettingsUpdate = None
     NavigationSettingsService = None
     ContactPageSettingsService = None
+    AccountPageSettingsService = None
     HistoryPageSettingsService = None
     ProductPageSettingsService = None
     NavigationSettingsUpdate = None
     ContactPageSettingsUpdate = None
+    AccountPageSettingsUpdate = None
     HistoryPageSettingsUpdate = None
     ProductPageSettingsUpdate = None
     ContactSubmissionCreate = None
@@ -197,3 +202,4 @@ except Exception as e:
     SmsTemplateUpdate = None
     UserService = None
     CustomerAuthService = None
+    PincodeService = None

@@ -31,6 +31,7 @@ SETTINGS_RESOURCES = {
     "policies",
     "studio-settings",
     "contact-page",
+    "account-page",
     "history-page",
     "product-page",
     "site-assets",

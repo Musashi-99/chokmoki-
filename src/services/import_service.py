@@ -257,6 +257,7 @@ SINGLETON_SECTIONS = {
     "story-page": ("story_page_settings", "settings_key", "main"),
     "navigation": ("navigation_settings", "settings_key", "main"),
     "contact-page": ("contact_page_settings", "settings_key", "main"),
+    "account-page": ("account_page_settings", "settings_key", "main"),
     "history-page": ("history_page_settings", "settings_key", "main"),
     "product-page": ("product_page_settings", "settings_key", "main"),
 }
@@ -345,6 +346,7 @@ RESTORE_INDEXES: List[tuple[str, str, bool]] = [
     ("story_page_settings", "settings_key", True),
     ("navigation_settings", "settings_key", True),
     ("contact_page_settings", "settings_key", True),
+    ("account_page_settings", "settings_key", True),
     ("history_page_settings", "settings_key", True),
     ("product_page_settings", "settings_key", True),
     ("journal_page_settings", "settings_key", True),

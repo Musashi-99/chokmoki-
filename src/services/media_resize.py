@@ -7,6 +7,16 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 _ALLOWED_WIDTHS = {160, 240, 360, 400, 480, 640, 768, 800, 828, 960, 1120, 1200, 1280, 1440, 1600, 1920}
 
 
+def cache_headers(etag: str | None, width: int | None) -> dict[str, str]:
+    headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+    if etag:
+        tag = str(etag).strip('"')
+        headers["ETag"] = f'"{tag}-w{width}"' if width else f'"{tag}"'
+    elif width:
+        headers["ETag"] = f'"w{width}"'
+    return headers
+
+
 def clamp_resize_width(width: int | None) -> int | None:
     if width is None:
         return None

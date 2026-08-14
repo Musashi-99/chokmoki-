@@ -375,8 +375,8 @@ class TestRestoreBundleCacheInvalidation:
 
 class TestSectionCoverageGuard:
     def test_restore_handles_every_exported_section_key(self):
-        """Keep in sync with the 17 keys collected by `collectSections()` in
-        aurum-editorial/src/lib/contentBundle.ts:138-159. If this test fails after
+        """Keep in sync with the keys collected by `collectSections()` in
+        chokmoki-ui/src/lib/contentBundle.ts. If this test fails after
         adding/renaming a section there, add matching handling in
         import_service._restore_section (and update EXPORTED_SECTION_KEYS below)
         before merging — a section that exports but doesn't import is a silent
@@ -388,9 +388,9 @@ class TestSectionCoverageGuard:
             "products", "categories", "hero", "site-assets", "collection-slides",
             "testimonials", "faq", "policies", "studio-settings", "shop-page",
             "home-page", "story-page", "journal", "navigation", "contact-page",
-            "history-page", "product-page",
+            "account-page", "history-page", "product-page",
         }
-        assert len(EXPORTED_SECTION_KEYS) == 17
+        assert len(EXPORTED_SECTION_KEYS) == 18
 
         composite_sections = {"policies", "journal"}
         handled = set(SIMPLE_LIST_SECTIONS.keys()) | set(SINGLETON_SECTIONS.keys()) | composite_sections

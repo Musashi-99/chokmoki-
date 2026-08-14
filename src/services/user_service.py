@@ -40,6 +40,12 @@ def normalize_email(raw: str) -> str:
     return (raw or "").strip().lower()
 
 
+def address_identity(line1: str, postal_code: str) -> tuple[str, str]:
+    line = re.sub(r"\s+", " ", (line1 or "").strip().lower())
+    pin = re.sub(r"\D", "", postal_code or "")
+    return line, pin
+
+
 class UserService:
     async def ensure_indexes(self) -> None:
         database = await db.get_database()
@@ -55,7 +61,18 @@ class UserService:
 
     async def get_by_phone(self, phone: str) -> Optional[User]:
         database = await db.get_database()
-        doc = await database[COLLECTION_NAME].find_one({"phone": normalize_phone(phone)})
+        phone = normalize_phone(phone)
+        if not phone:
+            return None
+        doc = await database[COLLECTION_NAME].find_one({"phone": phone})
+        return User(**doc) if doc else None
+
+    async def get_by_email(self, email: str) -> Optional[User]:
+        database = await db.get_database()
+        email = normalize_email(email)
+        if not email:
+            return None
+        doc = await database[COLLECTION_NAME].find_one({"email": email})
         return User(**doc) if doc else None
 
     async def get_or_create_by_phone(self, phone: str) -> User:
@@ -175,3 +192,97 @@ class UserService:
             {"$pull": {"addresses": {"id": address_id}}, "$set": {"updated_at": datetime.utcnow()}},
         )
         return await self.get_by_id(user_id)
+
+    async def capture_from_checkout(
+        self,
+        *,
+        full_name: str,
+        phone: str,
+        email: str,
+        address_line1: str,
+        address_line2: str = "",
+        city: str = "",
+        state: str = "",
+        postal_code: str = "",
+        country: str = "India",
+        existing_user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        phone_n = normalize_phone(phone)
+        if len(phone_n) != 10:
+            phone_n = ""
+        email_n = normalize_email(email)
+        name_n = (full_name or "").strip()
+
+        user: Optional[User] = None
+        if existing_user_id:
+            user = await self.get_by_id(existing_user_id)
+        if user is None and phone_n:
+            user = await self.get_by_phone(phone_n)
+        if user is None and email_n:
+            user = await self.get_by_email(email_n)
+
+        if user is None:
+            if not phone_n and not email_n:
+                return None
+            user = User(
+                phone=phone_n or None,
+                phone_verified=False,
+                email=email_n or None,
+                email_verified=False,
+                name=name_n or None,
+            )
+            database = await db.get_database()
+            try:
+                await database[COLLECTION_NAME].insert_one(user.model_dump())
+            except DuplicateKeyError:
+                user = None
+                if phone_n:
+                    user = await self.get_by_phone(phone_n)
+                if user is None and email_n:
+                    user = await self.get_by_email(email_n)
+                if user is None:
+                    raise
+
+        patch: dict = {}
+        if name_n and not (user.name or "").strip():
+            patch["name"] = name_n
+        if email_n and not (user.email or "").strip():
+            claimed = await self.get_by_email(email_n)
+            if claimed is None or claimed.id == user.id:
+                patch["email"] = email_n
+        if phone_n and not (user.phone or "").strip():
+            claimed = await self.get_by_phone(phone_n)
+            if claimed is None or claimed.id == user.id:
+                patch["phone"] = phone_n
+        if patch:
+            try:
+                updated = await self.update_profile(user.id, UserProfileUpdate(**patch))
+                if updated:
+                    user = updated
+            except ProfileConflictError:
+                user = await self.get_by_id(user.id) or user
+
+        if address_line1.strip() and postal_code.strip():
+            key = address_identity(address_line1, postal_code)
+            already = any(
+                address_identity(a.address_line1, a.postal_code) == key
+                for a in (user.addresses or [])
+            )
+            if not already:
+                await self.add_address(
+                    user.id,
+                    AddressInput(
+                        label="Home",
+                        full_name=name_n or user.name or "",
+                        phone=phone_n or user.phone or "",
+                        address_line1=address_line1.strip(),
+                        address_line2=(address_line2 or "").strip(),
+                        city=city.strip(),
+                        state=state.strip(),
+                        postal_code=postal_code.strip(),
+                        country=(country or "India").strip() or "India",
+                        is_default=not user.addresses,
+                    ),
+                )
+
+        return user.id

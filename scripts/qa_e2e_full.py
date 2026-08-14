@@ -113,7 +113,7 @@ def phase2():
     for ep in ["/api/testimonials", "/api/hero", "/api/site-assets", "/api/faq",
                "/api/collection-slides", "/api/studio-settings", "/api/shop-page",
                "/api/policies", "/api/home-page", "/api/story-page", "/api/navigation",
-               "/api/contact-page", "/api/history-page", "/api/product-page", "/api/journal", "/health"]:
+               "/api/contact-page", "/api/account-page", "/api/history-page", "/api/product-page", "/api/journal", "/health"]:
         r = req("GET", ep)
         check(ep, r and r.status_code == 200)
     return first_cat, first_prod_id
@@ -244,7 +244,7 @@ def phase10():
     for f in ["heritage_eyebrow", "trust_eyebrow", "postcard_title", "newsletter_heading", "footer_tagline"]:
         settings_rt("/api/admin/home-page", f)
     for ep in ["/api/admin/shop-page", "/api/admin/studio-settings", "/api/admin/story-page",
-               "/api/admin/navigation", "/api/admin/contact-page", "/api/admin/history-page", "/api/admin/product-page"]:
+               "/api/admin/navigation", "/api/admin/contact-page", "/api/admin/account-page", "/api/admin/history-page", "/api/admin/product-page"]:
         r = req("GET", ep, auth=True)
         check(f"{ep} GET", r and r.status_code == 200)
     check("journal/meta GET", req("GET", "/api/admin/journal/meta", auth=True).status_code == 200)

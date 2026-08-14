@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 import json
-from api.bootstrap import BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, settings
+from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, settings
 from api.json_utils import JSONEncoder, _json_dumps, _json_response_content
 
 router = APIRouter()
@@ -262,6 +262,14 @@ async def api_get_contact_page():
     if ContactPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     data = await ContactPageSettingsService().get_public()
+    return JSONResponse(content=_json_response_content({"data": data}))
+
+
+@router.get("/api/account-page")
+async def api_get_account_page():
+    if AccountPageSettingsService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    data = await AccountPageSettingsService().get_public()
     return JSONResponse(content=_json_response_content({"data": data}))
 
 
