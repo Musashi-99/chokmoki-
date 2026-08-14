@@ -137,6 +137,13 @@ def _default_rules_from_env() -> List[RateLimitRule]:
             ],
         ),
         RateLimitRule(
+            id="coupon_preview",
+            methods=["POST"],
+            paths=["/api/coupons/preview"],
+            operations=[],
+            buckets=[RateLimitBucket("ip", 30, "1h", 10)],
+        ),
+        RateLimitRule(
             id="contact",
             methods=["POST"],
             paths=["/api/contact"],

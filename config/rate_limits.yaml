@@ -53,6 +53,16 @@ rules:
         window: 1h
         burst: 5
 
+  - id: coupon_preview
+    match:
+      methods: [POST]
+      paths: [/api/coupons/preview]
+    buckets:
+      - scope: ip
+        rate: 30
+        window: 1h
+        burst: 10
+
   # Public contact form. burst was 1 with 1/hour per email — a single
   # legitimate resubmission (typo fix, "did that send?") would get blocked.
   # Customer login OTP (phone via MSG91 or email via Brevo — both submit as

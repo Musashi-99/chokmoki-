@@ -81,6 +81,22 @@ class TestRuleMatching:
         assert len(resolved) == 1
         assert resolved[0].rule_id == "orders"
 
+    def test_coupon_preview_beats_fallback(self):
+        from src.plugins.rate_limit_config import _default_rules_from_env
+
+        resolved = resolve_rate_limits(
+            _default_rules_from_env(),
+            method="POST",
+            path="/api/coupons/preview",
+            operation=None,
+            ip="203.0.113.9",
+            admin_email=None,
+            body_fields={},
+        )
+        rule_ids = {r.rule_id for r in resolved}
+        assert "coupon_preview" in rule_ids
+        assert "public_post_fallback" not in rule_ids
+
 
 class TestTokenBucketLimiter:
     @pytest.mark.asyncio
