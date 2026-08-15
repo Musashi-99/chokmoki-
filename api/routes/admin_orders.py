@@ -18,6 +18,8 @@ from api.bootstrap import (
 )
 from api.json_utils import JSONEncoder, _json_response_content
 from src.services import order_ledger
+from src.utils.money import money
+from src.utils.revenue import revenue_mongo_match
 
 router = APIRouter()
 
@@ -255,23 +257,11 @@ async def admin_get_stats(email: str = Depends(require_admin)):
     total_orders = await orders_collection.count_documents({})
 
     revenue_pipeline = [
-        {
-            "$match": {
-                "payment_status": "completed",
-                "status.type": {
-                    "$nin": [
-                        "rejected",
-                        "rejected_by_user",
-                        "refunded",
-                        "refund_requested",
-                    ]
-                },
-            }
-        },
+        {"$match": revenue_mongo_match()},
         {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}},
     ]
     revenue_result = await orders_collection.aggregate(revenue_pipeline).to_list(1)
-    total_revenue = revenue_result[0]["total"] if revenue_result else 0
+    total_revenue = money(revenue_result[0]["total"] if revenue_result else 0)
 
     status_pipeline = [
         {"$group": {"_id": "$status.type", "count": {"$sum": 1}}},

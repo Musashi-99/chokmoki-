@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_core import core_schema
 from bson import ObjectId
 from datetime import datetime
@@ -47,7 +47,7 @@ class JewelryProduct(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     slug: str
     name: str
-    price_inr: int
+    price_inr: float
     category: str
     collection: str
     thumbnail: str
@@ -77,6 +77,15 @@ class JewelryProduct(BaseModel):
     # Backward-compatible fields for order system
     selling_price: float = 0
     product_variants: List[ProductVariant] = []
+
+    @field_validator("price_inr")
+    @classmethod
+    def _money_price(cls, v):
+        from src.utils.money import money
+        n = money(v)
+        if n <= 0:
+            raise ValueError("Price must be greater than zero")
+        return n
     
     model_config = {
         "populate_by_name": True,
@@ -88,7 +97,7 @@ class JewelryProduct(BaseModel):
 class JewelryProductCreate(BaseModel):
     slug: str
     name: str
-    price_inr: int
+    price_inr: float
     category: str
     collection: str
     thumbnail: str
@@ -115,6 +124,15 @@ class JewelryProductCreate(BaseModel):
     stock_qty: Optional[int] = None
     active: bool = True
 
+    @field_validator("price_inr")
+    @classmethod
+    def _money_price(cls, v):
+        from src.utils.money import money
+        n = money(v)
+        if n <= 0:
+            raise ValueError("Price must be greater than zero")
+        return n
+
 
 from src.security.mass_assignment import StrictUpdateModel
 
@@ -122,7 +140,7 @@ from src.security.mass_assignment import StrictUpdateModel
 class JewelryProductUpdate(StrictUpdateModel):
     slug: Optional[str] = None
     name: Optional[str] = None
-    price_inr: Optional[int] = None
+    price_inr: Optional[float] = None
     category: Optional[str] = None
     collection: Optional[str] = None
     thumbnail: Optional[str] = None
@@ -148,6 +166,17 @@ class JewelryProductUpdate(StrictUpdateModel):
     stock_status: Optional[str] = None
     stock_qty: Optional[int] = None
     active: Optional[bool] = None
+
+    @field_validator("price_inr")
+    @classmethod
+    def _money_price(cls, v):
+        if v is None:
+            return v
+        from src.utils.money import money
+        n = money(v)
+        if n <= 0:
+            raise ValueError("Price must be greater than zero")
+        return n
 
 
 class Product(BaseModel):

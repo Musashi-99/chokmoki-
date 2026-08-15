@@ -45,7 +45,7 @@ def _coupon_doc(*, active: bool = True, code: str = "SAVE10") -> dict:
         "type": "CART",
         "amount": 10.0,
         "indicator": "PERCENT",
-        "product_id": None,
+        "product_ids": None,
         "active": active,
         "created_at": now,
         "updated_at": now,

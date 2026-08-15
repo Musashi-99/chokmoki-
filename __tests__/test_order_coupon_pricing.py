@@ -55,18 +55,18 @@ def _cart_percent_coupon(code: str = "SAVE10", amount: float = 10) -> Coupon:
         amount=amount,
         indicator=DiscountIndicator.PERCENT,
         active=True,
-        product_id=None,
+        product_ids=None,
     )
 
 
-def _product_coupon(product_id: str, code: str = "PROD10") -> Coupon:
+def _product_coupon(product_id: str = None, code: str = "PROD10", product_ids=None) -> Coupon:
     return Coupon(
         code=code,
         type=DiscountType.PRODUCT,
         amount=10,
         indicator=DiscountIndicator.PERCENT,
         active=True,
-        product_id=product_id,
+        product_ids=product_ids if product_ids is not None else [product_id],
     )
 
 
@@ -196,7 +196,7 @@ class TestOrderCouponPricing:
         assert doc["applied_discount"]["code"] == "SAVE10"
         assert order.applied_discount is not None
         assert order.applied_discount.code == "SAVE10"
-        assert order.applied_discount.product_id is None
+        assert order.applied_discount.product_ids is None
         assert order.discount == expected_computed
         assert order.total_amount == expected_total
 
@@ -256,9 +256,22 @@ class TestOrderCouponPricing:
 
         doc = mocks.orders.insert_one.call_args.args[0]
         assert doc["applied_discount"]["code"] == "PROD10"
-        assert doc["applied_discount"]["product_id"] == "p1"
+        assert doc["applied_discount"]["product_ids"] == ["p1"]
         assert doc["discount"] == 200
-        assert order.applied_discount.product_id == "p1"
+        assert order.applied_discount.product_ids == ["p1"]
+
+    @pytest.mark.asyncio
+    async def test_multi_product_coupon_persists_product_ids_on_snapshot(self):
+        coupon = _product_coupon(product_ids=["p1", "p2"])
+        order_data = OrderCreateInput(**_order_payload(couponCode="PROD10"))
+
+        with order_pipeline_mocks(coupon=coupon) as mocks:
+            order = await OrderService().create(order_data)
+
+        doc = mocks.orders.insert_one.call_args.args[0]
+        assert doc["applied_discount"]["product_ids"] == ["p1", "p2"]
+        assert doc["discount"] == 200
+        assert order.applied_discount.product_ids == ["p1", "p2"]
 
     @pytest.mark.asyncio
     async def test_admin_create_ignores_top_level_discount_without_code(self):

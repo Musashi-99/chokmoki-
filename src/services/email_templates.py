@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from src.config import settings
+from src.utils.money import money
 
 if TYPE_CHECKING:
     from src.models.order import Order
@@ -88,7 +89,7 @@ def _order_items_rows(order: "Order") -> str:
                 {item.product_name}{f'<br/><span style="color:#888;font-size:12px;">{variant}</span>' if variant else ''}
               </td>
               <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:center;">&times;{item.quantity}</td>
-              <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">&#8377;{item.total_price:,.2f}</td>
+              <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;">&#8377;{money(item.total_price):,.2f}</td>
             </tr>
             """
         )
@@ -104,9 +105,17 @@ def render_order_confirmation_email(order: "Order") -> tuple[str, str]:
     <p style="margin:20px 0 8px;"><strong>Order #{order.order_id}</strong></p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">
       {_order_items_rows(order)}
+      {f'''<tr>
+        <td colspan="2" style="padding-top:8px;text-align:right;">Discount{f" ({order.applied_discount.code})" if getattr(order, "applied_discount", None) and getattr(order.applied_discount, "code", None) else ""}</td>
+        <td style="padding-top:8px;text-align:right;">-&#8377;{money(order.discount):,.2f}</td>
+      </tr>''' if money(getattr(order, "discount", 0) or 0) > 0 else ""}
+      {f'''<tr>
+        <td colspan="2" style="padding-top:8px;text-align:right;">Shipping</td>
+        <td style="padding-top:8px;text-align:right;">&#8377;{money(order.shipping):,.2f}</td>
+      </tr>''' if money(getattr(order, "shipping", 0) or 0) > 0 else ""}
       <tr>
         <td colspan="2" style="padding-top:12px;text-align:right;font-weight:bold;">Total</td>
-        <td style="padding-top:12px;text-align:right;font-weight:bold;">&#8377;{order.total_amount:,.2f}</td>
+        <td style="padding-top:12px;text-align:right;font-weight:bold;">&#8377;{money(order.total_amount):,.2f}</td>
       </tr>
     </table>
     <p style="margin-top:24px;"><strong>Shipping to</strong><br/>

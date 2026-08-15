@@ -8,6 +8,18 @@ from src.models.product import PyObjectId
 from src.security.mass_assignment import StrictUpdateModel
 
 
+def migrate_legacy_product_id_data(data):
+    if not isinstance(data, dict):
+        return data
+    product_ids = data.get("product_ids")
+    product_id = data.get("product_id")
+    if not product_ids and product_id:
+        data = {**data, "product_ids": [product_id]}
+    if "product_id" in data:
+        data = {k: v for k, v in data.items() if k != "product_id"}
+    return data
+
+
 class DiscountType(StrEnum):
     CART = "CART"
     PRODUCT = "PRODUCT"
@@ -23,7 +35,12 @@ class AppliedDiscount(BaseModel):
     type: DiscountType
     amount: float
     indicator: DiscountIndicator
-    product_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_product_id(cls, data):
+        return migrate_legacy_product_id_data(data)
 
 
 class Coupon(BaseModel):
@@ -32,7 +49,7 @@ class Coupon(BaseModel):
     type: DiscountType
     amount: float
     indicator: DiscountIndicator
-    product_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
     active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -41,6 +58,11 @@ class Coupon(BaseModel):
         "populate_by_name": True,
         "arbitrary_types_allowed": True,
     }
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_product_id(cls, data):
+        return migrate_legacy_product_id_data(data)
 
     @field_serializer("id")
     def serialize_id(self, value: Optional[PyObjectId]) -> Optional[str]:
@@ -56,8 +78,13 @@ class CouponCreate(BaseModel):
     type: DiscountType
     amount: float
     indicator: DiscountIndicator
-    product_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
     active: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_product_id(cls, data):
+        return migrate_legacy_product_id_data(data)
 
     @field_validator("code", mode="before")
     @classmethod
@@ -76,12 +103,18 @@ class CouponCreate(BaseModel):
                 raise ValueError("AMOUNT must be greater than 0")
 
         if self.type == DiscountType.PRODUCT:
-            product_id = (self.product_id or "").strip()
-            if not product_id:
-                raise ValueError("product_id is required for PRODUCT coupons")
-            self.product_id = product_id
+            seen = set()
+            product_ids = []
+            for pid in self.product_ids or []:
+                pid = (pid or "").strip()
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    product_ids.append(pid)
+            if not product_ids:
+                raise ValueError("At least one product is required for PRODUCT coupons")
+            self.product_ids = product_ids
         else:
-            self.product_id = None
+            self.product_ids = None
         return self
 
 
@@ -90,8 +123,13 @@ class CouponUpdate(StrictUpdateModel):
     type: Optional[DiscountType] = None
     amount: Optional[float] = None
     indicator: Optional[DiscountIndicator] = None
-    product_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
     active: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_product_id(cls, data):
+        return migrate_legacy_product_id_data(data)
 
     @field_validator("code", mode="before")
     @classmethod
