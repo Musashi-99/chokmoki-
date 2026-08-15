@@ -79,7 +79,11 @@ class OrderStatus(BaseModel):
         "out_for_delivery",
         "agent",
         "agent_changed",
-        "in_hub"
+        "in_hub",
+        "cancelled",
+        "cancellation_requested",
+        "refunded",
+        "refund_requested",
     ]
     reason: str = ""
     extras: Dict[str, Any] = {}  # Keep flexible for dynamic data

@@ -8,8 +8,7 @@ from src.plugins.logger import logger
 from src.models.dto import RazorpayOrderResponseDTO
 
 
-def inr_to_paise(amount: float) -> int:
-    return int(round(float(amount or 0) * 100))
+from src.utils.money import inr_to_paise, paise_to_inr
 
 
 class RazorpayService:
@@ -46,8 +45,7 @@ class RazorpayService:
     def fetch_payment_amount_inr(self, razorpay_payment_id: str) -> float:
         """Return captured payment amount in INR (not paise)."""
         payment = self.client.payment.fetch(razorpay_payment_id)
-        amount_paise = int(payment.get("amount") or 0)
-        return amount_paise / 100.0
+        return paise_to_inr(payment.get("amount") or 0)
 
     def fetch_payments_window(self, from_ts: int, to_ts: int, max_pages: int = 50) -> dict:
         """Bulk-fetch every captured/authorized payment in [from_ts, to_ts]
@@ -104,7 +102,7 @@ class RazorpayService:
                 payments[order_id] = {
                     "id": payment.get("id"),
                     "status": payment.get("status"),
-                    "amount_inr": int(payment.get("amount") or 0) / 100.0,
+                    "amount_inr": paise_to_inr(payment.get("amount") or 0),
                 }
             if len(items) < 100:
                 break
@@ -132,7 +130,7 @@ class RazorpayService:
                     return {
                         "id": payment.get("id"),
                         "status": payment.get("status"),
-                        "amount_inr": int(payment.get("amount") or 0) / 100.0,
+                        "amount_inr": paise_to_inr(payment.get("amount") or 0),
                     }
             return None
         except Exception as e:

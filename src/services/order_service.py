@@ -27,6 +27,7 @@ from src.services.payment_reconciliation_service import PaymentReconciliationSer
 from src.resilience.circuit_breaker import CircuitBreaker
 from src.resilience.guarded import call_guarded
 from src.utils.regex_safe import escape_mongo_regex
+from src.utils.money import money
 from src.security.mongo_safe import coerce_safe_string
 from src.services.user_service import UserService
 
@@ -467,16 +468,12 @@ class OrderService:
     
     def _recalculate_pricing(self, validated_items: List[ValidatedOrderItem]) -> PricingDTO:
         """Recalculate pricing from validated items - never trust user data"""
-        subtotal = float(sum(item.total_price for item in validated_items))
-        discount = 0.0  # Can be calculated based on business logic
-        shipping = 0.0  # Can be calculated based on shipping address
-        total = max(0.0, subtotal - discount + shipping)
-        
+        subtotal = money(sum(item.total_price for item in validated_items))
         return PricingDTO(
             subtotal=subtotal,
-            discount=discount,
-            shipping=shipping,
-            total=total
+            discount=0,
+            shipping=0,
+            total=subtotal,
         )
 
     @staticmethod
@@ -485,10 +482,10 @@ class OrderService:
         shipping: float = 0,
         discount: float = 0,
     ) -> tuple[float, float, float, float]:
-        subtotal = float(sum(item.total_price for item in validated_items))
-        shipping = max(0.0, float(shipping or 0))
-        discount = max(0.0, float(discount or 0))
-        total = max(0.0, subtotal + shipping - discount)
+        subtotal = money(sum(item.total_price for item in validated_items))
+        shipping = money(max(0.0, float(shipping or 0)))
+        discount = money(max(0.0, float(discount or 0)))
+        total = money(max(0.0, subtotal + shipping - discount))
         return subtotal, shipping, discount, total
     
     async def create(self, order_data: OrderCreateInput, ip: Optional[str] = None) -> Order:
@@ -620,7 +617,7 @@ class OrderService:
             if not self._validate_variant(product, variant):
                 raise ValueError(f"Invalid variant for product {product.name}")
 
-            unit_price = float(raw.get("unit_price", product.price_inr))
+            unit_price = money(product.price_inr)
             validated_items.append(
                 ValidatedOrderItem(
                     product_id=str(product.id),
@@ -628,7 +625,7 @@ class OrderService:
                     variant=variant,
                     quantity=quantity,
                     unit_price=unit_price,
-                    total_price=unit_price * quantity,
+                    total_price=money(unit_price * quantity),
                     size=raw.get("size"),
                 )
             )
@@ -648,7 +645,7 @@ class OrderService:
             total_amount = pricing.total
         else:
             discount = 0.0
-            total_amount = max(0.0, subtotal + shipping)
+            total_amount = money(max(0.0, subtotal + shipping))
 
         payment_method_raw = (payload.get("payment_method") or "cod").strip().lower()
         payment_method = "razorpay" if payment_method_raw == "razorpay" else "cod"
@@ -1066,8 +1063,8 @@ class OrderService:
             if not self._validate_variant(product, variant):
                 raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
             
-            unit_price = float(product.price_inr)
-            total_price = unit_price * item.quantity
+            unit_price = money(product.price_inr)
+            total_price = money(unit_price * item.quantity)
             
             validated_items.append(ValidatedOrderItem(
                 product_id=str(product.id),

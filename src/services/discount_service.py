@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -16,10 +16,7 @@ from src.models.coupon import (
     DiscountIndicator,
     DiscountType,
 )
-
-
-def money(x) -> float:
-    return float(Decimal(str(x)).quantize(Decimal("0.01"), ROUND_HALF_UP))
+from src.utils.money import money
 
 
 def _attr(obj, name):
@@ -28,34 +25,50 @@ def _attr(obj, name):
     return getattr(obj, name)
 
 
+def _attr_get(obj, name, default=None):
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def coupon_product_ids(coupon: Any) -> list[str]:
+    ids = _attr_get(coupon, "product_ids") or []
+    if ids:
+        return [str(pid) for pid in ids]
+    pid = _attr_get(coupon, "product_id")
+    if pid:
+        return [str(pid)]
+    return []
+
+
 def compute_discount(
     items: Sequence[Any],
     coupon: Any,
     shipping: float = 0,
 ) -> tuple[float, float, float]:
-    subtotal = money(sum(_attr(item, "total_price") for item in items))
+    subtotal = money(sum(money(_attr(item, "total_price")) for item in items))
     coupon_type = _attr(coupon, "type")
     indicator = _attr(coupon, "indicator")
     amount = _attr(coupon, "amount")
 
     if coupon_type == DiscountType.PRODUCT:
-        product_id = str(_attr(coupon, "product_id") or "")
+        product_ids = set(coupon_product_ids(coupon))
         matching = [
-            item for item in items if str(_attr(item, "product_id")) == product_id
+            item for item in items if str(_attr(item, "product_id")) in product_ids
         ]
         if not matching:
             raise ValueError("Coupon does not apply to this cart")
-        eligible = money(sum(_attr(item, "total_price") for item in matching))
+        eligible = money(sum(money(_attr(item, "total_price")) for item in matching))
     else:
         eligible = subtotal
 
     if indicator == DiscountIndicator.PERCENT:
-        computed = money(eligible * amount / 100)
+        computed = money(Decimal(str(eligible)) * Decimal(str(amount)) / Decimal("100"))
     else:
         computed = money(min(amount, eligible))
 
-    computed = min(computed, subtotal)
-    total = money(max(0, subtotal - computed + shipping))
+    computed = money(min(computed, subtotal))
+    total = money(max(0, subtotal - computed + money(shipping)))
     return computed, total, subtotal
 
 
@@ -73,7 +86,7 @@ class DiscountService:
     ) -> tuple[PricingDTO, Optional[AppliedDiscount]]:
         items = validated_items or []
         if not (code or "").strip():
-            subtotal = money(sum(_attr(item, "total_price") for item in items))
+            subtotal = money(sum(money(_attr(item, "total_price")) for item in items))
             ship = money(shipping)
             return (
                 PricingDTO(
@@ -104,8 +117,8 @@ class DiscountService:
                 type=coupon.type,
                 amount=coupon.amount,
                 indicator=coupon.indicator,
-                product_id=(
-                    coupon.product_id
+                product_ids=(
+                    coupon_product_ids(coupon)
                     if coupon.type == DiscountType.PRODUCT
                     else None
                 ),
@@ -128,7 +141,7 @@ class DiscountService:
             priced.append(
                 SimpleNamespace(
                     product_id=str(product.id),
-                    total_price=float(product.price_inr) * int(quantity),
+                    total_price=money(Decimal(str(product.price_inr)) * int(quantity)),
                 )
             )
         return priced
@@ -195,7 +208,7 @@ class CouponService:
             "type": existing.type,
             "amount": existing.amount,
             "indicator": existing.indicator,
-            "product_id": existing.product_id,
+            "product_ids": existing.product_ids,
             "active": existing.active,
         }
         merged.update(payload)

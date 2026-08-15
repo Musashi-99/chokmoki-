@@ -18,6 +18,7 @@ from src.database.redis_connection import redis_client
 from src.plugins.logger import logger
 from src.services.product_service import ProductService
 from src.services import order_ledger
+from src.utils.money import money
 from src.shiprocket.client import ShiprocketAPIError, ShiprocketClient, ShiprocketNotConfiguredError
 
 # Optional alerts import (matches the established pattern in order_service.py)
@@ -307,9 +308,11 @@ class ShiprocketService:
             else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         )
         items = order_doc.get("items", [])
-        sub_total = sum(
-            float(item.get("unit_price") or 0) * int(item.get("quantity") or 1)
-            for item in items
+        sub_total = money(
+            sum(
+                float(item.get("unit_price") or 0) * int(item.get("quantity") or 1)
+                for item in items
+            )
         )
         return {
             "order_id": order_doc["order_id"],
@@ -340,7 +343,7 @@ class ShiprocketService:
                     "name": item.get("product_name", "Item"),
                     "sku": item.get("product_id", "SKU"),
                     "units": item.get("quantity", 1),
-                    "selling_price": item.get("unit_price", 0),
+                    "selling_price": money(item.get("unit_price", 0)),
                     **(
                         {
                             "tax": self._gst_rate_value(),
@@ -354,8 +357,8 @@ class ShiprocketService:
             ],
             "payment_method": payment_method,
             "sub_total": sub_total,
-            "shipping_charges": float(order_doc.get("shipping") or 0),
-            "total_discount": float(order_doc.get("discount") or 0),
+            "shipping_charges": money(order_doc.get("shipping") or 0),
+            "total_discount": money(order_doc.get("discount") or 0),
             "length": length_cm,
             "breadth": breadth_cm,
             "height": height_cm,

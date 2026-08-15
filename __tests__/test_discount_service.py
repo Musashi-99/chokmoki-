@@ -11,9 +11,11 @@ from pydantic import ValidationError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.coupon import (
+    AppliedDiscount,
     Coupon,
     CouponCreate,
     CouponPreviewInput,
+    CouponUpdate,
     DiscountIndicator,
     DiscountType,
 )
@@ -43,13 +45,13 @@ def _cart_percent(amount: float, code: str = "SAVE10") -> CouponCreate:
     )
 
 
-def _product_coupon(amount: float, indicator: DiscountIndicator, product_id: str) -> CouponCreate:
+def _product_coupon(amount: float, indicator: DiscountIndicator, *product_ids: str) -> CouponCreate:
     return CouponCreate(
         code="PROD10",
         type=DiscountType.PRODUCT,
         amount=amount,
         indicator=indicator,
-        product_id=product_id,
+        product_ids=list(product_ids),
     )
 
 
@@ -126,6 +128,57 @@ class TestComputeDiscount:
         assert computed == 2000
         assert total == 80
 
+    def test_product_percent_10_matches_multiple_products(self):
+        items = [_item("a", 1000), _item("b", 1000), _item("c", 3000)]
+        coupon = _product_coupon(10, DiscountIndicator.PERCENT, "a", "b")
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 5000
+        assert computed == 200
+        assert total == 4800
+
+    def test_product_matches_only_one_of_several_ids(self):
+        items = [_item("a", 1000), _item("other", 3000)]
+        coupon = _product_coupon(10, DiscountIndicator.PERCENT, "a", "b", "c")
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 4000
+        assert computed == 100
+        assert total == 3900
+
+    def test_legacy_single_product_id_computes_like_product_ids(self):
+        items = [_item("match", 2000), _item("other", 3000)]
+        coupon = SimpleNamespace(
+            type=DiscountType.PRODUCT,
+            indicator=DiscountIndicator.PERCENT,
+            amount=10,
+            product_id="match",
+        )
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 5000
+        assert computed == 200
+        assert total == 4800
+
+    def test_product_ids_wins_over_legacy_product_id_no_double_count(self):
+        items = [_item("a", 1000), _item("b", 1000), _item("c", 3000)]
+        coupon = SimpleNamespace(
+            type=DiscountType.PRODUCT,
+            indicator=DiscountIndicator.PERCENT,
+            amount=10,
+            product_ids=["a", "b"],
+            product_id="c",
+        )
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 5000
+        assert computed == 200
+        assert total == 4800
+
+    def test_single_product_coupon_does_not_discount_other_listed_elsewhere(self):
+        items = [_item("solo", 2000), _item("multi_a", 1000), _item("multi_b", 1000)]
+        coupon = _product_coupon(10, DiscountIndicator.PERCENT, "solo")
+        computed, total, subtotal = compute_discount(items, coupon)
+        assert subtotal == 4000
+        assert computed == 200
+        assert total == 3800
+
 
 class TestCouponCreate:
     def test_percent_amount_0_rejected(self):
@@ -164,7 +217,7 @@ class TestCouponCreate:
                 indicator=DiscountIndicator.AMOUNT,
             )
 
-    def test_product_without_product_id_rejected(self):
+    def test_product_without_product_ids_rejected(self):
         with pytest.raises(ValidationError):
             CouponCreate(
                 code="NOPROD",
@@ -173,25 +226,35 @@ class TestCouponCreate:
                 indicator=DiscountIndicator.PERCENT,
             )
 
-    def test_product_empty_product_id_rejected(self):
+    def test_product_empty_product_ids_rejected(self):
         with pytest.raises(ValidationError):
             CouponCreate(
                 code="EMPTYID",
                 type=DiscountType.PRODUCT,
                 amount=10,
                 indicator=DiscountIndicator.PERCENT,
-                product_id="   ",
+                product_ids=["   "],
             )
 
-    def test_cart_strips_product_id(self):
+    def test_product_dedupes_and_strips_ids(self):
+        coupon = CouponCreate(
+            code="MULTI",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            product_ids=[" a ", "b", "a"],
+        )
+        assert coupon.product_ids == ["a", "b"]
+
+    def test_cart_strips_product_ids(self):
         coupon = CouponCreate(
             code="CARTID",
             type=DiscountType.CART,
             amount=500,
             indicator=DiscountIndicator.AMOUNT,
-            product_id="should-be-ignored",
+            product_ids=["should-be-ignored"],
         )
-        assert coupon.product_id is None
+        assert coupon.product_ids is None
 
     def test_code_uppercased(self):
         coupon = CouponCreate(
@@ -220,6 +283,27 @@ class TestCouponCreate:
         )
         assert coupon.amount == 100
 
+    def test_legacy_product_id_accepted_as_single_product_coupon(self):
+        coupon = CouponCreate(
+            code="SOLO10",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            product_id="p1",
+        )
+        assert coupon.product_ids == ["p1"]
+
+    def test_product_ids_not_merged_with_legacy_product_id(self):
+        coupon = CouponCreate(
+            code="MULTI10",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            product_ids=["a", "b"],
+            product_id="c",
+        )
+        assert coupon.product_ids == ["a", "b"]
+
 
 class TestCouponPreviewInput:
     def test_empty_items_rejected(self):
@@ -239,7 +323,7 @@ def _coupon(**kwargs) -> Coupon:
         amount=10,
         indicator=DiscountIndicator.PERCENT,
         active=True,
-        product_id=None,
+        product_ids=None,
     )
     defaults.update(kwargs)
     return Coupon(**defaults)
@@ -294,15 +378,15 @@ class TestDiscountServiceApply:
         assert applied.type == DiscountType.CART
         assert applied.amount == 10
         assert applied.indicator == DiscountIndicator.PERCENT
-        assert applied.product_id is None
+        assert applied.product_ids is None
 
     @pytest.mark.asyncio
-    async def test_product_coupon_snapshots_product_id(self):
+    async def test_product_coupon_snapshots_product_ids(self):
         items = [_item("match", 2000), _item("other", 3000)]
         coupon = _coupon(
             code="PROD10",
             type=DiscountType.PRODUCT,
-            product_id="match",
+            product_ids=["match"],
             amount=10,
             indicator=DiscountIndicator.PERCENT,
         )
@@ -311,21 +395,95 @@ class TestDiscountServiceApply:
         assert pricing.discount == 200
         assert pricing.total == 4800
         assert applied is not None
-        assert applied.product_id == "match"
+        assert applied.product_ids == ["match"]
         assert applied.type == DiscountType.PRODUCT
+
+    @pytest.mark.asyncio
+    async def test_multi_product_coupon_snapshots_all_ids(self):
+        items = [_item("a", 1000), _item("b", 1000), _item("c", 3000)]
+        coupon = _coupon(
+            code="PROD10",
+            type=DiscountType.PRODUCT,
+            product_ids=["a", "b"],
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+        )
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            pricing, applied = await DiscountService().apply("PROD10", items)
+        assert pricing.discount == 200
+        assert pricing.total == 4800
+        assert applied.product_ids == ["a", "b"]
 
     @pytest.mark.asyncio
     async def test_product_miss_raises(self):
         items = [_item("other", 2000)]
         coupon = _coupon(
             type=DiscountType.PRODUCT,
-            product_id="match",
+            product_ids=["match"],
             amount=10,
             indicator=DiscountIndicator.PERCENT,
         )
         with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
             with pytest.raises(ValueError, match="Coupon does not apply to this cart"):
                 await DiscountService().apply("SAVE10", items)
+
+    @pytest.mark.asyncio
+    async def test_legacy_product_id_doc_loads_as_product_ids(self):
+        coupon = Coupon(
+            code="LEGACY",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            active=True,
+            product_id="legacy",
+        )
+        assert coupon.product_ids == ["legacy"]
+
+    async def test_legacy_single_product_coupon_applies_without_product_ids_field(self):
+        items = [_item("legacy", 2000), _item("other", 3000)]
+        coupon = Coupon(
+            code="SOLO10",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            active=True,
+            product_id="legacy",
+        )
+        with patch.object(CouponService, "get_by_code", new_callable=AsyncMock, return_value=coupon):
+            pricing, applied = await DiscountService().apply("SOLO10", items)
+        assert pricing.discount == 200
+        assert pricing.total == 4800
+        assert applied is not None
+        assert applied.product_ids == ["legacy"]
+
+
+class TestAppliedDiscountCompat:
+    def test_legacy_product_id_snapshot_becomes_product_ids(self):
+        snap = AppliedDiscount(
+            code="SOLO10",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            product_id="ring",
+        )
+        assert snap.product_ids == ["ring"]
+
+    def test_product_ids_not_overwritten_by_legacy_product_id(self):
+        snap = AppliedDiscount(
+            code="MULTI10",
+            type=DiscountType.PRODUCT,
+            amount=10,
+            indicator=DiscountIndicator.PERCENT,
+            product_ids=["a", "b"],
+            product_id="c",
+        )
+        assert snap.product_ids == ["a", "b"]
+
+
+class TestCouponUpdateCompat:
+    def test_legacy_product_id_becomes_product_ids(self):
+        update = CouponUpdate(product_id="p1")
+        assert update.product_ids == ["p1"]
 
 
 class TestResolvePreviewItems:

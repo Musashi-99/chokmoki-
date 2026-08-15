@@ -70,7 +70,7 @@ async def admin_update_coupon(
             "type": existing.type,
             "amount": existing.amount,
             "indicator": existing.indicator,
-            "product_id": existing.product_id,
+            "product_ids": existing.product_ids,
             "active": existing.active,
         }
         merged.update(update_data)

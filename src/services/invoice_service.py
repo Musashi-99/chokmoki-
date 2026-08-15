@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from pymongo import ReturnDocument
@@ -37,6 +38,8 @@ from reportlab.pdfgen import canvas as pdf_canvas
 
 from src.config import settings
 from src.database.connection import db
+from src.services.discount_service import coupon_product_ids
+from src.utils.money import allocate_shares, inr_to_paise, money
 
 ORDERS_COLLECTION = "orders"
 COUNTERS_COLLECTION = "counters"
@@ -148,8 +151,8 @@ def _three_digits(n: int) -> str:
 
 def amount_in_words_inr(amount: float) -> str:
     """Indian-numbering words for an INR amount (crore/lakh/thousand)."""
-    rupees = int(amount)
-    paise = int(round((amount - rupees) * 100))
+    paise_total = inr_to_paise(amount)
+    rupees, paise = divmod(paise_total, 100)
     if rupees == 0:
         words = "Zero"
     else:
@@ -233,28 +236,53 @@ class InvoiceService:
             return customer_code == seller_code
         return _norm_state(customer_state) == _norm_state(seller_state)
 
+    def _discount_mask(self, order_doc: Dict[str, Any], items: List[Dict[str, Any]]) -> List[bool]:
+        snap = order_doc.get("applied_discount") or {}
+        coupon_type = snap.get("type") if isinstance(snap, dict) else getattr(snap, "type", None)
+        if not coupon_type or str(coupon_type) == "CART":
+            return [True] * len(items)
+        ids = set(coupon_product_ids(snap))
+        return [str(item.get("product_id")) in ids for item in items]
+
     def _tax_lines(self, order_doc: Dict[str, Any], doc_type: str) -> List[Dict[str, Any]]:
         """Per-item rows with the GST-inclusive price decomposed into
         taxable value + tax amounts. bill_of_supply keeps the full price as
         the line value with no tax split (that's what the format means).
+        Discount is allocated onto eligible lines before the GST split so
+        taxable value matches what was charged.
         """
-        rate = settings.gst_total_percent / 100.0 if settings.gst_enabled else 0.0
+        rate = (
+            Decimal(str(settings.gst_total_percent)) / Decimal("100")
+            if settings.gst_enabled
+            else Decimal("0")
+        )
         split_tax = doc_type != "bill_of_supply" and rate > 0
         intra = self._is_intra_state(order_doc)
 
+        items = list(order_doc.get("items", []))
+        line_totals = [
+            money(Decimal(str(item.get("unit_price", 0))) * int(item.get("quantity", 1)))
+            for item in items
+        ]
+        shares = allocate_shares(
+            line_totals,
+            money(order_doc.get("discount") or 0),
+            self._discount_mask(order_doc, items),
+        )
+
         rows = []
-        for item in order_doc.get("items", []):
+        for item, line_total, share in zip(items, line_totals, shares):
             qty = int(item.get("quantity", 1))
-            unit_price = float(item.get("unit_price", 0))
-            line_total = round(unit_price * qty, 2)
+            unit_price = money(item.get("unit_price", 0))
+            net = money(Decimal(str(line_total)) - Decimal(str(share)))
             if split_tax:
-                taxable = round(line_total / (1 + rate), 2)
-                tax_amount = round(line_total - taxable, 2)
+                taxable = money(Decimal(str(net)) / (Decimal("1") + rate))
+                tax_amount = money(Decimal(str(net)) - Decimal(str(taxable)))
             else:
-                taxable = line_total
+                taxable = net
                 tax_amount = 0.0
-            half = round(tax_amount / 2, 2)
-            remainder = round(tax_amount - half, 2)
+            half = money(Decimal(str(tax_amount)) / Decimal("2"))
+            remainder = money(Decimal(str(tax_amount)) - Decimal(str(half)))
             rows.append({
                 "name": item.get("product_name", "Item"),
                 "sku": item.get("product_id", ""),
@@ -265,9 +293,34 @@ class InvoiceService:
                 "cgst": half if (split_tax and intra) else 0.0,
                 "sgst": remainder if (split_tax and intra) else 0.0,
                 "igst": tax_amount if (split_tax and not intra) else 0.0,
-                "total": line_total,
+                "gross": line_total,
+                "total": net,
+                "net": net,
+                "discount": share,
             })
         return rows
+
+    def _commercial_totals(self, order_doc: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, float]:
+        gross = money(sum(r.get("gross", r["total"]) for r in rows))
+        net_goods = money(sum(r["net"] for r in rows))
+        discount = money(order_doc.get("discount") or 0)
+        shipping = money(order_doc.get("shipping") or 0)
+        taxable = money(sum(r["taxable"] for r in rows))
+        cgst = money(sum(r["cgst"] for r in rows))
+        sgst = money(sum(r["sgst"] for r in rows))
+        igst = money(sum(r["igst"] for r in rows))
+        grand = money(order_doc.get("total_amount") or 0)
+        return {
+            "gross": gross,
+            "net_goods": net_goods,
+            "discount": discount,
+            "shipping": shipping,
+            "taxable": taxable,
+            "cgst": cgst,
+            "sgst": sgst,
+            "igst": igst,
+            "grand": grand,
+        }
 
     # ---- PDF layout ------------------------------------------------------
 
@@ -453,13 +506,15 @@ class InvoiceService:
         y -= 2 * mm
 
         # -- Totals block (right-aligned)
-        taxable_total = round(sum(r["taxable"] for r in rows), 2)
-        cgst_total = round(sum(r["cgst"] for r in rows), 2)
-        sgst_total = round(sum(r["sgst"] for r in rows), 2)
-        igst_total = round(sum(r["igst"] for r in rows), 2)
-        shipping = float(order_doc.get("shipping") or 0)
-        discount = float(order_doc.get("discount") or 0)
-        grand_total = float(order_doc.get("total_amount") or 0)
+        totals = self._commercial_totals(order_doc, rows)
+        taxable_total = totals["taxable"]
+        cgst_total = totals["cgst"]
+        sgst_total = totals["sgst"]
+        igst_total = totals["igst"]
+        shipping = totals["shipping"]
+        discount = totals["discount"]
+        grand_total = totals["grand"]
+        subtotal = totals["gross"]
 
         def total_line(label: str, value: str, yy: float, *, bold: bool = False) -> float:
             c.setFont("Helvetica-Bold" if bold else "Helvetica", 8.5 if bold else 8)
@@ -468,12 +523,7 @@ class InvoiceService:
             c.drawRightString(page_w - margin, yy, value)
             return yy - 5 * mm
 
-        y = total_line("Taxable Value:", f"Rs. {taxable_total:.2f}", y)
-        if show_tax and intra:
-            y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", f"Rs. {cgst_total:.2f}", y)
-            y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", f"Rs. {sgst_total:.2f}", y)
-        elif show_tax:
-            y = total_line(f"IGST @ {self._fmt_rate(settings.gst_total_percent)}%:", f"Rs. {igst_total:.2f}", y)
+        y = total_line("Subtotal:", f"Rs. {subtotal:.2f}", y)
         if discount:
             label = "Discount:"
             snap = order_doc.get("applied_discount") or {}
@@ -484,6 +534,22 @@ class InvoiceService:
         if shipping:
             y = total_line("Shipping:", f"Rs. {shipping:.2f}", y)
         y = total_line("GRAND TOTAL:", f"Rs. {grand_total:.2f}", y, bold=True)
+        if show_tax:
+            y -= 2 * mm
+            c.setFont("Helvetica", 7.5)
+            c.setFillColor(muted)
+            c.drawRightString(page_w - margin, y, "GST breakup (included in prices)")
+            y -= 4.5 * mm
+            y = total_line("Taxable Value:", f"Rs. {taxable_total:.2f}", y)
+            if intra:
+                y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", f"Rs. {cgst_total:.2f}", y)
+                y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", f"Rs. {sgst_total:.2f}", y)
+            else:
+                y = total_line(
+                    f"IGST @ {self._fmt_rate(settings.gst_total_percent)}%:",
+                    f"Rs. {igst_total:.2f}",
+                    y,
+                )
         y -= 1 * mm
 
         c.setFont("Helvetica-Oblique", 8)
