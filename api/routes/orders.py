@@ -108,7 +108,11 @@ async def api_create_order(
         order_data = OrderCreateInput(**payload)
         service = OrderService()
         client_ip = get_client_ip(request) if get_client_ip else None
-        order = await service.create(order_data, ip=client_ip)
+        order = await service.create(
+            order_data,
+            ip=client_ip,
+            correlation_id=getattr(request.state, "correlation_id", None),
+        )
     except HTTPException:
         if idem_storage_key:
             await idem_service.release_lock(idem_storage_key)
@@ -310,23 +314,42 @@ async def razorpay_webhook(
                 logger.debug(f"Full webhook payload: {webhook_data}")
                 return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
 
+            idem_service = IdempotencyService()
+            idem_key = f"razorpay_webhook:{razorpay_payment_id}"
+            fingerprint = idem_service.fingerprint(
+                scope="razorpay_webhook",
+                payload={"payment_id": razorpay_payment_id},
+            )
+            try:
+                existing = await idem_service.begin(idem_key, fingerprint)
+            except IdempotencyInProgressError:
+                return JSONResponse(status_code=200, content={"status": "duplicate_in_progress"})
+            if existing is not None:
+                return JSONResponse(status_code=existing.status_code, content=existing.body)
+
             # Durable, crash-safe processing: verify (above) is the only part
             # that must stay synchronous. The actual Mongo write happens in
             # src/orders/consumer.py via XREADGROUP — if this process crashes
             # between this XADD and the consumer acking it, XAUTOCLAIM
             # redelivers on restart (safe: complete_pending_order() is
             # idempotent). Razorpay only needs a fast 200 here.
-            if publish_order_event is not None:
-                await publish_order_event(
-                    EVENT_PAYMENT_CAPTURED,
-                    {
-                        "order_id": order_id,
-                        "razorpay_order_id": razorpay_order_id,
-                        "razorpay_payment_id": razorpay_payment_id,
-                    },
-                    correlation_id=getattr(request.state, "correlation_id", None),
-                )
-            return JSONResponse(content={"status": "accepted", "order_id": order_id})
+            try:
+                if publish_order_event is not None:
+                    await publish_order_event(
+                        EVENT_PAYMENT_CAPTURED,
+                        {
+                            "order_id": order_id,
+                            "razorpay_order_id": razorpay_order_id,
+                            "razorpay_payment_id": razorpay_payment_id,
+                        },
+                        correlation_id=getattr(request.state, "correlation_id", None),
+                    )
+                accepted = {"status": "accepted", "order_id": order_id}
+                await idem_service.store(idem_key, fingerprint, status_code=200, body=accepted)
+                return JSONResponse(content=accepted)
+            except Exception:
+                await idem_service.release_lock(idem_key)
+                raise
 
         if event == "payment.failed":
             failed_entity = payload_data.get("payment", {}).get("entity", {})
