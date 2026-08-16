@@ -1,14 +1,23 @@
 """Admin CRUD for storefront content (hero, nav, policies, pages, journal, etc)."""
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import json
 import httpx
-from api.bootstrap import AccountPageSettingsService, AccountPageSettingsUpdate, BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, require_admin, require_update_fields, settings
+from api.bootstrap import AccountPageSettingsService, AccountPageSettingsUpdate, BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, cache, require_admin, require_update_fields, settings
 from api.json_utils import JSONEncoder, _json_response_content
 
 router = APIRouter()
+
+
+async def _bust(*keys: str, pattern: Optional[str] = None) -> None:
+    if not cache:
+        return
+    for key in keys:
+        await cache.delete(key)
+    if pattern:
+        await cache.delete_pattern(pattern)
 
 
 @router.get("/api/admin/testimonials")
@@ -47,6 +56,8 @@ async def admin_create_testimonial(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    if cache:
+        await cache.delete("chokmoki:testimonials")
     return JSONResponse(content=json.loads(json.dumps(
         testimonial.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -68,6 +79,8 @@ async def admin_update_testimonial(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Testimonial not found")
+    if cache:
+        await cache.delete("chokmoki:testimonials")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -85,6 +98,8 @@ async def admin_delete_testimonial(testimonial_id: str, email: str = Depends(req
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Testimonial not found")
+    if cache:
+        await cache.delete("chokmoki:testimonials")
     return {"success": True}
 
 
@@ -122,6 +137,8 @@ async def admin_create_hero_config(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    if cache:
+        await cache.delete("chokmoki:hero")
     return JSONResponse(content=json.loads(json.dumps(
         config.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -153,6 +170,8 @@ async def admin_update_hero_config(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         updated = await service.get_by_id(config_id)
+    if cache:
+        await cache.delete("chokmoki:hero")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -170,6 +189,8 @@ async def admin_delete_hero_config(config_id: str, email: str = Depends(require_
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Hero config not found")
+    if cache:
+        await cache.delete("chokmoki:hero")
     return {"success": True}
 
 @router.get("/api/admin/site-assets")
@@ -202,6 +223,9 @@ async def admin_create_site_asset(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    if cache:
+        await cache.delete("chokmoki:site-assets")
+        await cache.delete_pattern("chokmoki:site-asset:*")
     return JSONResponse(content=json.loads(json.dumps(
         asset.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -223,6 +247,9 @@ async def admin_update_site_asset(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Site asset not found")
+    if cache:
+        await cache.delete("chokmoki:site-assets")
+        await cache.delete_pattern("chokmoki:site-asset:*")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -240,6 +267,9 @@ async def admin_delete_site_asset(asset_id: str, email: str = Depends(require_ad
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Site asset not found")
+    if cache:
+        await cache.delete("chokmoki:site-assets")
+        await cache.delete_pattern("chokmoki:site-asset:*")
     return {"success": True}
 
 
@@ -275,6 +305,8 @@ async def admin_create_faq_item(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    if cache:
+        await cache.delete_pattern("chokmoki:faq:*")
     return JSONResponse(content=json.loads(json.dumps(
         item.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -296,6 +328,8 @@ async def admin_update_faq_item(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="FAQ item not found")
+    if cache:
+        await cache.delete_pattern("chokmoki:faq:*")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -313,6 +347,8 @@ async def admin_delete_faq_item(faq_id: str, email: str = Depends(require_admin)
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="FAQ item not found")
+    if cache:
+        await cache.delete_pattern("chokmoki:faq:*")
     return {"success": True}
 
 
@@ -348,6 +384,7 @@ async def admin_create_collection_slide(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    await _bust("chokmoki:collection-slides")
     return JSONResponse(content=json.loads(json.dumps(
         slide.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -369,6 +406,7 @@ async def admin_update_collection_slide(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Collection slide not found")
+    await _bust("chokmoki:collection-slides")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -386,6 +424,7 @@ async def admin_delete_collection_slide(slide_id: str, email: str = Depends(requ
         raise HTTPException(status_code=400, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail="Collection slide not found")
+    await _bust("chokmoki:collection-slides")
     return {"success": True}
 
 @router.get("/api/admin/studio-settings")
@@ -409,6 +448,7 @@ async def admin_upsert_studio_settings(
         updated = await StudioSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:studio-settings")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -437,6 +477,7 @@ async def admin_upsert_shop_page(
         updated = await ShopPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:shop-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -463,6 +504,7 @@ async def admin_upsert_policy_meta(
         updated = await PolicyContentService().upsert_meta(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:policies")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -488,6 +530,7 @@ async def admin_upsert_policy_section(
         updated = await PolicyContentService().upsert_section_by_slug(slug, update_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:policies")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -511,6 +554,7 @@ async def admin_create_policy_section(
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:policies")
     return JSONResponse(
         status_code=201,
         content=json.loads(json.dumps(created.model_dump(by_alias=True), cls=JSONEncoder)),
@@ -526,6 +570,7 @@ async def admin_delete_policy_section(
     deleted = await PolicyContentService().delete_section_by_slug(slug)
     if not deleted:
         raise HTTPException(status_code=404, detail="Policy section not found")
+    await _bust("chokmoki:policies")
     return JSONResponse(content={"success": True, "slug": slug})
 
 @router.get("/api/admin/home-page")
@@ -549,6 +594,7 @@ async def admin_upsert_home_page(
         updated = await HomePageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:home-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -575,6 +621,7 @@ async def admin_upsert_story_page(
         updated = await StoryPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:story-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -601,6 +648,7 @@ async def admin_upsert_navigation(
         updated = await NavigationSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:navigation")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -627,6 +675,7 @@ async def admin_upsert_contact_page(
         updated = await ContactPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:contact-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -653,6 +702,7 @@ async def admin_upsert_account_page(
         updated = await AccountPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:account-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -679,6 +729,7 @@ async def admin_upsert_history_page(
         updated = await HistoryPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:history-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -705,6 +756,7 @@ async def admin_upsert_product_page(
         updated = await ProductPageSettingsService().upsert(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:product-page")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -734,6 +786,7 @@ async def admin_upsert_journal_meta(
         updated = await BlogService().upsert_journal(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:journal")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -764,6 +817,7 @@ async def admin_create_blog_post(
         created = await BlogService().create_post(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _bust("chokmoki:journal")
     return JSONResponse(content=json.loads(json.dumps(
         created.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -783,6 +837,7 @@ async def admin_update_blog_post(
         raise HTTPException(status_code=400, detail=str(e))
     if not updated:
         raise HTTPException(status_code=404, detail="Blog post not found")
+    await _bust("chokmoki:journal")
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -795,6 +850,7 @@ async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admi
     deleted = await BlogService().delete_post(post_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Blog post not found")
+    await _bust("chokmoki:journal")
     return {"success": True}
 
 
