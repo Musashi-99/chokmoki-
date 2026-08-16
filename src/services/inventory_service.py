@@ -322,10 +322,14 @@ class InventoryService:
             stock_qty = await self._get_stock_qty(item.product_id)
             if not self.tracks_inventory(stock_qty):
                 continue
+            filt: Dict[str, Any]
             if ObjectId.is_valid(item.product_id):
-                filt: Dict[str, Any] = {"_id": ObjectId(item.product_id)}
+                filt = {"_id": ObjectId(item.product_id)}
             else:
-                filt = {"slug": item.product_id}
+                doc = await collection.find_one({"slug": item.product_id}, {"_id": 1})
+                if not doc:
+                    continue
+                filt = {"_id": doc["_id"]}
             await collection.update_one(
                 filt,
                 {"$inc": {"stock_qty": item.quantity}, "$set": {"stock_status": "in_stock"}},

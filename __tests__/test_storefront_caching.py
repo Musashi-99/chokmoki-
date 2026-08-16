@@ -2,6 +2,8 @@ import os, sys
 os.environ["ENVIRONMENT"] = "development"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
+os.environ.setdefault("RAZORPAY_KEY_ID", "rzp_test")
+os.environ.setdefault("RAZORPAY_KEY_SECRET", "secret")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
@@ -31,4 +33,4 @@ async def test_faq_list_writes_through_to_cache_on_miss():
         await api_list_faq(scope=None)
         mock_cache.set.assert_awaited_once()
         args, _ = mock_cache.set.call_args
-        assert args[0] == "chokmoki:faq:general"
+        assert args[0] == "chokmoki:faq:all"

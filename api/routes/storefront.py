@@ -240,7 +240,7 @@ async def api_list_faq(scope: Optional[str] = None):
     if FAQItemService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
-    cache_key = f"chokmoki:faq:{scope or 'general'}"
+    cache_key = f"chokmoki:faq:{scope or 'all'}"
     if cache:
         cached = await cache.get(cache_key)
         if cached:

@@ -171,6 +171,7 @@ async def admin_create_category(
 
     if cache:
         await cache.delete("chokmoki:categories")
+        await cache.delete_pattern("chokmoki:category:*")
 
     return JSONResponse(content=json.loads(json.dumps(
         category.model_dump(by_alias=True), cls=JSONEncoder
@@ -212,6 +213,7 @@ async def admin_update_category(
 
     if cache:
         await cache.delete("chokmoki:categories")
+        await cache.delete_pattern("chokmoki:category:*")
 
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
@@ -233,5 +235,6 @@ async def admin_delete_category(category_id: str, email: str = Depends(require_a
 
     if cache:
         await cache.delete("chokmoki:categories")
+        await cache.delete_pattern("chokmoki:category:*")
 
     return {"success": True}

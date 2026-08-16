@@ -179,6 +179,7 @@ except Exception as e:
     HomePageSettingsUpdate = None
     StoryPageSettingsUpdate = None
     BlogPostCreate = None
+    BlogPostUpdate = None
     JournalPageSettingsUpdate = None
     NavigationSettingsService = None
     ContactPageSettingsService = None
