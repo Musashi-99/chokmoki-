@@ -53,6 +53,12 @@ class StudioSettingsService:
         else:
             payload.setdefault("active", True)
             payload.setdefault("email", "")
+            payload.setdefault("legal_name", "")
+            payload.setdefault("brand_name", "")
+            payload.setdefault("phone", "")
+            payload.setdefault("grievance_officer", "")
+            payload.setdefault("hours_days", "")
+            payload.setdefault("hours_time", "")
             payload.setdefault("address", "")
             payload.setdefault("address_lines", [])
             payload.setdefault("address_detail", "")

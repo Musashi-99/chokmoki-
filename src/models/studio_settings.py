@@ -9,6 +9,12 @@ class StudioSettings(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     settings_key: str = "main"
     email: str = ""
+    legal_name: str = ""
+    brand_name: str = ""
+    phone: str = ""
+    grievance_officer: str = ""
+    hours_days: str = ""
+    hours_time: str = ""
     address: str = ""
     address_lines: List[str] = Field(default_factory=list)
     address_detail: str = ""
@@ -28,6 +34,12 @@ class StudioSettings(BaseModel):
 
 class StudioSettingsUpdate(BaseModel):
     email: Optional[str] = None
+    legal_name: Optional[str] = None
+    brand_name: Optional[str] = None
+    phone: Optional[str] = None
+    grievance_officer: Optional[str] = None
+    hours_days: Optional[str] = None
+    hours_time: Optional[str] = None
     address: Optional[str] = None
     address_lines: Optional[List[str]] = None
     address_detail: Optional[str] = None
