@@ -68,7 +68,11 @@ async def admin_create_order(
     try:
         service = OrderService()
         client_ip = get_client_ip(request) if get_client_ip else None
-        order = await service.create_from_admin(payload, ip=client_ip)
+        order = await service.create_from_admin(
+            payload,
+            ip=client_ip,
+            correlation_id=getattr(request.state, "correlation_id", None),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -12,6 +12,7 @@ from src.plugins.logger import logger
 from src.services.customer_session_service import CustomerSessionService
 from src.services.otp_channel import EmailOtpChannel, OtpChannel
 from src.services.user_service import UserService, normalize_email
+from src.security.login_lockout import LoginLockoutService
 
 
 class CustomerAuthService:
@@ -24,6 +25,7 @@ class CustomerAuthService:
     def __init__(self) -> None:
         self.sessions = CustomerSessionService()
         self.users = UserService()
+        self.lockout = LoginLockoutService()
 
     def _channel(self) -> OtpChannel:
         return EmailOtpChannel()
@@ -56,13 +58,18 @@ class CustomerAuthService:
         identifier = normalize_email(identifier)
         return await self._channel().send_otp(identifier)
 
-    async def verify_otp_and_login(self, identifier: str, otp: str) -> Optional[tuple[User, CustomerAuthTokens]]:
+    async def verify_otp_and_login(
+        self, identifier: str, otp: str, ip: str = "unknown"
+    ) -> Optional[tuple[User, CustomerAuthTokens]]:
         identifier = normalize_email(identifier)
+        await self.lockout.assert_not_locked(ip, identifier)
 
         ok = await self._channel().verify_otp(identifier, otp)
         if not ok:
+            await self.lockout.record_failure(ip, identifier)
             return None
 
+        await self.lockout.record_success(ip, identifier)
         user = await self.users.get_or_create_by_email(identifier)
 
         session_id, refresh_token = await self.sessions.create_session(

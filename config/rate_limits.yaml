@@ -76,6 +76,36 @@ rules:
         window: 1h
         burst: 2
 
+  # OTP codes are short (4-6 digits) — this is the actual brute-force
+  # defense for /api/auth/otp/verify. otp_request throttles how many codes
+  # get sent; this throttles how many guesses one identifier gets against
+  # whichever code was last sent. Paired with customer OTP lockout.
+  - id: otp_verify
+    match:
+      methods: [POST]
+      paths: [/api/auth/otp/verify]
+    buckets:
+      - scope: ip
+        rate: 20
+        window: 15m
+        burst: 8
+      - scope: email
+        field: identifier
+        rate: 8
+        window: 15m
+        burst: 5
+
+  # Public, unauthenticated coupon-code probe surface.
+  - id: coupon_preview
+    match:
+      methods: [POST]
+      paths: [/api/coupons/preview]
+    buckets:
+      - scope: ip
+        rate: 30
+        window: 5m
+        burst: 15
+
   - id: contact
     match:
       methods: [POST]

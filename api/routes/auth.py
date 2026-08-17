@@ -11,6 +11,8 @@ from typing import Optional
 
 from src.plugins.customer_cookies import clear_customer_auth_cookies, set_customer_auth_cookies
 from src.plugins.customer_deps import REFRESH_COOKIE
+from src.security.client_ip import get_client_ip
+from src.security.exceptions import AccountLockedError
 from src.services.customer_auth_service import CustomerAuthService
 
 router = APIRouter()
@@ -53,8 +55,13 @@ async def otp_request(payload: OtpRequestPayload):
 
 
 @router.post("/api/auth/otp/verify")
-async def otp_verify(payload: OtpVerifyPayload):
-    result = await CustomerAuthService().verify_otp_and_login(payload.identifier, payload.otp)
+async def otp_verify(payload: OtpVerifyPayload, request: Request):
+    try:
+        result = await CustomerAuthService().verify_otp_and_login(
+            payload.identifier, payload.otp, ip=get_client_ip(request)
+        )
+    except AccountLockedError:
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
     if not result:
         raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 

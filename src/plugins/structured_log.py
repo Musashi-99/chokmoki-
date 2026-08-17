@@ -102,3 +102,21 @@ def security_log(
     else:
         logger.info(msg)
 
+
+def app_log(
+    *,
+    severity: str,
+    module: str,
+    event: str,
+    correlation_id: Any = None,
+    **fields: Any,
+) -> None:
+    """Structured JSON log for business-logic events (orders, payments, inventory)."""
+    security_log(
+        severity=severity,
+        module=module,
+        event=event,
+        correlation_id=correlation_id,
+        **fields,
+    )
+

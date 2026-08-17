@@ -114,30 +114,48 @@ async def api_get_category(slug: str):
     """Get a single category by slug"""
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = f"chokmoki:category:{slug}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = CategoryService()
     category = await service.get_by_slug(slug)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
-    
-    return JSONResponse(
-        content=json.loads(json.dumps(
-            category.model_dump(by_alias=True),
-            cls=JSONEncoder
-        ))
-    )
+
+    result = json.loads(json.dumps(
+        category.model_dump(by_alias=True),
+        cls=JSONEncoder
+    ))
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=result)
 
 @router.get("/api/testimonials")
 async def api_list_testimonials():
     """List all active testimonials."""
     if TestimonialService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = "chokmoki:testimonials"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = TestimonialService()
     testimonials = await service.list(active=True)
     total = await service.count(active=True)
-    
-    return JSONResponse(content=_json_response_content({"data": testimonials, "count": total}))
+
+    result = {"data": testimonials, "count": total}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/hero")
@@ -145,23 +163,46 @@ async def api_get_hero_config():
     """Get the active hero configuration."""
     if HeroConfigService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = "chokmoki:hero"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = HeroConfigService()
     config = await service.get_active()
     if not config:
-        return JSONResponse(content={"media_type": None, "media_url": None, "alt_text": None, "active": False})
-    
-    return JSONResponse(content=_json_response_content(config.model_dump(by_alias=True)))
+        result = {"media_type": None, "media_url": None, "alt_text": None, "active": False}
+        if cache:
+            await cache.set(cache_key, _json_dumps(result), 300)
+        return JSONResponse(content=result)
+
+    result = config.model_dump(by_alias=True)
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+
+    return JSONResponse(content=_json_response_content(result))
 
 @router.get("/api/site-assets")
 async def api_list_site_assets():
     """List all active site assets."""
     if SiteAssetService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = "chokmoki:site-assets"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = SiteAssetService()
     assets = await service.list(active=True)
-    return JSONResponse(content=_json_response_content({"data": assets, "count": len(assets)}))
+    result = {"data": assets, "count": len(assets)}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/site-assets/{key}")
@@ -169,18 +210,26 @@ async def api_get_site_asset(key: str):
     """Get a single active site asset by key."""
     if SiteAssetService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = f"chokmoki:site-asset:{key}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = SiteAssetService()
     asset = await service.get_by_key(key)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    
-    return JSONResponse(
-        content=json.loads(json.dumps(
-            asset.model_dump(by_alias=True),
-            cls=JSONEncoder
-        ))
-    )
+
+    result = json.loads(json.dumps(
+        asset.model_dump(by_alias=True),
+        cls=JSONEncoder
+    ))
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=result)
 
 
 # ========== Public: FAQ ==========
@@ -190,10 +239,20 @@ async def api_list_faq(scope: Optional[str] = None):
     """List active FAQ items, optionally filtered by scope."""
     if FAQItemService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = f"chokmoki:faq:{scope or 'all'}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = FAQItemService()
     items = await service.list(scope=scope, active=True)
-    return JSONResponse(content=_json_response_content({"data": items, "count": len(items)}))
+    result = {"data": items, "count": len(items)}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 # ========== Public: Collection Slides ==========
@@ -203,10 +262,20 @@ async def api_list_collection_slides():
     """List all active collection slides."""
     if CollectionSlideService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
+
+    cache_key = "chokmoki:collection-slides"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = CollectionSlideService()
     slides = await service.list(active=True)
-    return JSONResponse(content=_json_response_content({"data": slides, "count": len(slides)}))
+    result = {"data": slides, "count": len(slides)}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+
+    return JSONResponse(content=_json_response_content(result))
 
 # ========== Public: Studio, Shop page, Policies ==========
 
@@ -214,90 +283,210 @@ async def api_list_collection_slides():
 async def api_get_studio_settings():
     if StudioSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:studio-settings"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await StudioSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/shop-page")
 async def api_get_shop_page():
     if ShopPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:shop-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await ShopPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/policies")
 async def api_get_policies():
     if PolicyContentService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:policies"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     bundle = await PolicyContentService().get_public_bundle()
+    if cache:
+        await cache.set(cache_key, _json_dumps(bundle), 600)
+
     return JSONResponse(content=_json_response_content(bundle))
 
 @router.get("/api/home-page")
 async def api_get_home_page():
     if HomePageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:home-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await HomePageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/story-page")
 async def api_get_story_page():
     if StoryPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:story-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await StoryPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/navigation")
 async def api_get_navigation():
     if NavigationSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:navigation"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await NavigationSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/contact-page")
 async def api_get_contact_page():
     if ContactPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:contact-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await ContactPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/account-page")
 async def api_get_account_page():
     if AccountPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:account-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await AccountPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/history-page")
 async def api_get_history_page():
     if HistoryPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:history-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await HistoryPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/product-page")
 async def api_get_product_page():
     if ProductPageSettingsService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:product-page"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     data = await ProductPageSettingsService().get_public()
-    return JSONResponse(content=_json_response_content({"data": data}))
+    result = {"data": data}
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 600)
+
+    return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/journal")
 async def api_get_journal():
     if BlogService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    cache_key = "chokmoki:journal"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = BlogService()
     meta = await service.get_journal_public()
     posts = await service.list_posts(active=True, limit=50)
-    return JSONResponse(content=_json_response_content({
+    result = {
         "meta": meta,
         "data": posts,
         "count": len(posts),
-    }))
+    }
+    if cache:
+        await cache.set(cache_key, _json_dumps(result), 300)
+
+    return JSONResponse(content=_json_response_content(result))

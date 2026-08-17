@@ -20,6 +20,7 @@ from src.services.razorpay_service import RazorpayService
 from src.services import order_ledger
 from src.config import settings
 from src.plugins.logger import logger
+from src.plugins.structured_log import app_log
 from src.fraud.models import FraudAction, FraudContext
 from src.fraud.enrichment import FraudEnrichmentService
 from src.services.fraud_detection_service import FraudDetectionService
@@ -488,7 +489,12 @@ class OrderService:
         total = money(max(0.0, subtotal + shipping - discount))
         return subtotal, shipping, discount, total
     
-    async def create(self, order_data: OrderCreateInput, ip: Optional[str] = None) -> Order:
+    async def create(
+        self,
+        order_data: OrderCreateInput,
+        ip: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> Order:
         """Create order with validation and recalculation (for COD)"""
         if order_data.paymentMethod == "razorpay":
             raise ValueError("Use initiate_order for razorpay payments")
@@ -509,7 +515,8 @@ class OrderService:
 
         inventory_service = InventoryService()
         await inventory_service.commit_items(validated_items)
-        
+        committed_items = validated_items
+
         database = await db.get_database()
         orders_collection = database[self.COLLECTION_NAME]
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
@@ -545,7 +552,11 @@ class OrderService:
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
 
-        result = await orders_collection.insert_one(order_dict)
+        try:
+            result = await orders_collection.insert_one(order_dict)
+        except Exception:
+            await inventory_service.release_committed_items(committed_items)
+            raise
         order_dict["_id"] = result.inserted_id
 
         # Convert log to dict for MongoDB
@@ -570,12 +581,26 @@ class OrderService:
             payload={"items": [item.model_dump() for item in order_data.items]},
         )
 
-        logger.info(f"Order created: {order_id} (MongoDB ID: {result.inserted_id})")
+        app_log(
+            severity="INFO",
+            module="order_service",
+            event="order_created",
+            correlation_id=correlation_id,
+            order_id=order_id,
+            total_amount=float(pricing.total),
+            payment_method=order_dict["payment_method"],
+            source="checkout",
+        )
         # Convert shipping_address dict to DTO when creating Order
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
 
-    async def create_from_admin(self, payload: dict, ip: Optional[str] = None) -> Order:
+    async def create_from_admin(
+        self,
+        payload: dict,
+        ip: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> Order:
         """Create an order from the admin dashboard (manual / phone orders)."""
         payload = self._normalize_admin_payload(payload)
         user_email = (payload.get("user_email") or "").strip()
@@ -705,11 +730,18 @@ class OrderService:
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
 
+        inventory_service = InventoryService()
+        committed_items: List[ValidatedOrderItem] = []
         if payment_status == "completed":
-            inventory_service = InventoryService()
             await inventory_service.commit_items(validated_items)
+            committed_items = validated_items
 
-        result = await orders_collection.insert_one(order_dict)
+        try:
+            result = await orders_collection.insert_one(order_dict)
+        except Exception:
+            if committed_items:
+                await inventory_service.release_committed_items(committed_items)
+            raise
         order_dict["_id"] = result.inserted_id
 
         log_dict = {
@@ -726,7 +758,16 @@ class OrderService:
             {"payment_method": payment_method, "total_amount": total_amount, "source": "admin_dashboard"},
         )
 
-        logger.info(f"Admin order created: {order_id}")
+        app_log(
+            severity="INFO",
+            module="order_service",
+            event="order_created",
+            correlation_id=correlation_id,
+            order_id=order_id,
+            total_amount=float(total_amount),
+            payment_method=payment_method,
+            source="admin_dashboard",
+        )
         order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
         return Order(**order_dict)
     

@@ -312,6 +312,29 @@ class InventoryService:
             if not await self._atomic_decrement(item.product_id, item.quantity):
                 raise ValueError(f"Insufficient stock for product {item.product_id}")
 
+    async def release_committed_items(self, items: List[ValidatedOrderItem]) -> None:
+        """Reverse commit_items() when the following order write never landed."""
+        if not settings.inventory_enabled:
+            return
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        for item in items:
+            stock_qty = await self._get_stock_qty(item.product_id)
+            if not self.tracks_inventory(stock_qty):
+                continue
+            filt: Dict[str, Any]
+            if ObjectId.is_valid(item.product_id):
+                filt = {"_id": ObjectId(item.product_id)}
+            else:
+                doc = await collection.find_one({"slug": item.product_id}, {"_id": 1})
+                if not doc:
+                    continue
+                filt = {"_id": doc["_id"]}
+            await collection.update_one(
+                filt,
+                {"$inc": {"stock_qty": item.quantity}, "$set": {"stock_status": "in_stock"}},
+            )
+
     async def release_reservation(self, order_id: str) -> None:
         lines = await self._load_reservation(order_id)
         from_mirror = None
