@@ -131,6 +131,10 @@ from src.middleware.metrics_middleware import MetricsMiddleware
 
 app.add_middleware(MetricsMiddleware)
 
+from src.middleware.security_headers import SecurityHeadersMiddleware
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 from api.routes import (
     account,
