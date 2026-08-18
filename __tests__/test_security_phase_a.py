@@ -127,30 +127,15 @@ class TestBOLARegression:
                 )
 
     @pytest.mark.asyncio
-    async def test_shipping_address_get_matching_email_allowed(self):
-        mock_address = MagicMock()
-        mock_address.email = "owner@example.com"
-
-        with patch(
-            "src.cqrs.router.ShippingAddressService"
-        ) as mock_service_cls, patch.object(
-            CQRSRouter.QUERIES["shippingAddress.get"],
-            "execute",
-            new_callable=AsyncMock,
-        ) as mock_execute:
-            mock_service_cls.return_value.get_by_id = AsyncMock(
-                return_value=mock_address
-            )
-            mock_execute.return_value = {"data": {"email": "owner@example.com"}}
-
-            result = await CQRSRouter.execute_query(
+    async def test_shipping_address_get_matching_email_requires_admin(self):
+        with pytest.raises(AuthorizationError):
+            await CQRSRouter.execute_query(
                 "shippingAddress.get",
                 {
                     "id": "507f1f77bcf86cd799439011",
                     "email": "owner@example.com",
                 },
             )
-            assert result["data"]["email"] == "owner@example.com"
 
     @pytest.mark.asyncio
     async def test_order_get_id_only_denied(self):

@@ -49,6 +49,16 @@ class FakeScanRedis:
     async def get(self, key: str):
         return self.store.get(key)
 
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.store else 0
+
+    async def delete(self, *keys: str):
+        for key in keys:
+            self.store.pop(key, None)
+
+    async def getdel(self, key: str):
+        return self.store.pop(key, None)
+
 
 class FakeRazorpay:
     def __init__(self, captured: dict[str, dict | None]) -> None:
@@ -232,6 +242,9 @@ def _stub_external_modules() -> None:
     telegram.Bot = object
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.TelegramError = Exception
+    telegram_error.NetworkError = Exception
+    telegram_error.RetryAfter = Exception
+    telegram_error.TimedOut = Exception
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda *a, **k: object()
     botocore = types.ModuleType("botocore")
@@ -258,9 +271,15 @@ def api_module(monkeypatch):
     monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
     monkeypatch.delenv("CRON_SECRET", raising=False)
     _stub_external_modules()
-    sys.modules.pop("api.index", None)
-    sys.modules.pop("src.config", None)
-    return importlib.import_module("api.index")
+    for name in list(sys.modules):
+        if name in {"api.index", "api.bootstrap", "src.config"} or name.startswith("api.routes"):
+            sys.modules.pop(name, None)
+    api_module = importlib.import_module("api.index")
+    from api import bootstrap
+
+    if bootstrap.settings is not None:
+        bootstrap.settings.cron_secret = None
+    return api_module
 
 
 class TestReconcileCronRoute:

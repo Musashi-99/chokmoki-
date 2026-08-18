@@ -1,18 +1,19 @@
 """Public, read-only storefront content endpoints (no auth)."""
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 from typing import List, Optional
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 import json
 from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, settings
 from api.json_utils import JSONEncoder, _json_dumps, _json_response_content
+from src.services.product_filters import parse_ids_query
 
 router = APIRouter()
 
 
-async def _cache_products_key(category, search, sort, skip, limit, is_best_seller=None, is_curated=None):
+async def _cache_products_key(category, search, sort, skip, limit, is_best_seller=None, is_curated=None, ids=None):
     return (
         f"chokmoki:products:{category or 'all'}:{search or 'all'}:{sort or 'default'}"
-        f":bs{is_best_seller}:cur{is_curated}:{skip}:{limit}"
+        f":bs{is_best_seller}:cur{is_curated}:{skip}:{limit}:ids{ids or 'all'}"
     )
 
 
@@ -23,15 +24,20 @@ async def api_list_products(
     sort: Optional[str] = None,
     is_best_seller: Optional[bool] = None,
     is_curated: Optional[bool] = None,
+    ids: Optional[str] = Query(default=None),
     skip: int = 0,
     limit: int = 50,
 ):
     """List products with optional filtering (cached)"""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    id_list = parse_ids_query(ids)
+    if id_list:
+        limit = max(limit, len(id_list))
     
     cache_key = await _cache_products_key(
-        category, search, sort, skip, limit, is_best_seller, is_curated
+        category, search, sort, skip, limit, is_best_seller, is_curated, ",".join(id_list) if id_list else None
     )
     if cache:
         cached = await cache.get(cache_key)
@@ -43,10 +49,12 @@ async def api_list_products(
         skip=skip, limit=limit, active=True,
         category=category, sort=sort, search=search,
         is_best_seller=is_best_seller, is_curated=is_curated,
+        ids=id_list,
     )
     total = await service.count(
         active=True, category=category, search=search,
         is_best_seller=is_best_seller, is_curated=is_curated,
+        ids=id_list,
     )
     result = {"data": products, "count": total}
     

@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from typing import List
 from api.bootstrap import R2Service, UploadValidationError, logger, require_admin, validate_upload
+from src.services.media_resize import recompress_upload
 
 router = APIRouter()
 
@@ -28,6 +29,9 @@ async def admin_upload(
                 )
             except UploadValidationError as ve:
                 raise HTTPException(status_code=400, detail=str(ve)) from ve
+            content, content_type = recompress_upload(content, content_type)
+            if content_type == "image/webp":
+                extension = "webp"
             url = await service.upload_file(
                 content,
                 extension=extension,

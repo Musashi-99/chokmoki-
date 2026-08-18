@@ -76,6 +76,36 @@ rules:
         window: 1h
         burst: 2
 
+  - id: otp_verify
+    match:
+      methods: [POST]
+      paths: [/api/auth/otp/verify]
+    buckets:
+      - scope: ip
+        rate: 20
+        window: 15m
+        burst: 8
+      - scope: email
+        field: identifier
+        rate: 10
+        window: 15m
+        burst: 5
+
+  - id: coupons_preview
+    match:
+      methods: [POST]
+      paths: [/api/coupons/preview]
+    buckets:
+      - scope: ip
+        rate: 20
+        window: 1h
+        burst: 8
+      - scope: email
+        field: code
+        rate: 10
+        window: 1h
+        burst: 5
+
   - id: contact
     match:
       methods: [POST]

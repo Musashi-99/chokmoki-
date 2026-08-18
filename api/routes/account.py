@@ -21,6 +21,31 @@ def _serialize_user(user) -> dict:
     }
 
 
+async def collect_account_orders(principal: CustomerPrincipal):
+    """Orders linked to this session. Email is proven by OTP login.
+    Phone is only used after it has been verified — a profile phone
+    field is not proof of ownership.
+    """
+    order_service = OrderService()
+    user = await UserService().get_by_id(principal.user_id)
+    by_user_id = await order_service.list_by_user_id(principal.user_id)
+    email = ((user.email if user else None) or principal.email or "").strip()
+    by_email = await order_service.list_by_email(email) if email else []
+    by_phone = []
+    if user and user.phone_verified and (user.phone or "").strip():
+        by_phone = await order_service.list_by_phone(user.phone)
+
+    seen: set[str] = set()
+    merged = []
+    for order in by_user_id + by_phone + by_email:
+        if order.order_id in seen:
+            continue
+        seen.add(order.order_id)
+        merged.append(order)
+    merged.sort(key=lambda o: o.created_at, reverse=True)
+    return merged
+
+
 @router.get("/api/account/me")
 async def get_me(principal: CustomerPrincipal = Depends(require_customer_auth)):
     user = await UserService().get_by_id(principal.user_id)
@@ -84,29 +109,5 @@ async def delete_address(
 
 @router.get("/api/account/orders")
 async def list_my_orders(principal: CustomerPrincipal = Depends(require_customer_auth)):
-    """Merges user_id-, phone-, and email-matched orders. user_id is the
-    strongest match (order placed while this exact session was verified at
-    checkout); phone/email are the fallback for guest checkouts placed
-    under either identifier before the owner ever logged in.
-    """
-    order_service = OrderService()
-    by_user_id = await order_service.list_by_user_id(principal.user_id)
-    by_phone = await order_service.list_by_phone(principal.phone) if principal.phone else []
-    by_email = await order_service.list_by_email(principal.email) if principal.email else []
-
-    seen: set[str] = set()
-    merged = []
-    for order in by_user_id + by_phone + by_email:
-        if order.order_id in seen:
-            continue
-        seen.add(order.order_id)
-        merged.append(order)
-    merged.sort(key=lambda o: o.created_at, reverse=True)
-
-    # exclude "id" (aliased "_id"): it's a raw bson ObjectId with no
-    # pydantic-v2 serializer registered (only a validator — see
-    # PyObjectId in src/models/shipping_address.py), so jsonable_encoder
-    # can't serialize it and the whole response 500s. The frontend's
-    # CustomerOrder type never reads it, so just drop it rather than fix
-    # every model that reuses PyObjectId.
+    merged = await collect_account_orders(principal)
     return [order.model_dump(by_alias=True, exclude={"id"}) for order in merged]

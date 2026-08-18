@@ -15,7 +15,13 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from api.bootstrap import logger, settings
-from src.services.media_resize import clamp_resize_width, resize_image_bytes, cache_headers
+from src.services.media_resize import (
+    cache_headers,
+    read_disk_cache,
+    resize_image_bytes,
+    serve_width,
+    write_disk_cache,
+)
 
 router = APIRouter()
 
@@ -79,9 +85,14 @@ async def serve_media(key: str, w: int | None = Query(default=None, ge=1, le=192
 
     try:
         body, content_type, cache_control, etag = await asyncio.to_thread(fetch)
-        width = clamp_resize_width(w)
+        width = serve_width(w, content_type)
         if width:
-            body, content_type = resize_image_bytes(body, content_type, width)
+            cached = read_disk_cache(key, etag, width)
+            if cached:
+                body, content_type = cached
+            else:
+                body, content_type = resize_image_bytes(body, content_type, width)
+                write_disk_cache(key, etag, width, body, content_type)
         headers = cache_headers(etag, width if width else None)
         if not width:
             headers["Cache-Control"] = cache_control

@@ -34,6 +34,9 @@ def _stub_external_modules() -> None:
     telegram.Bot = object
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.TelegramError = Exception
+    telegram_error.NetworkError = Exception
+    telegram_error.RetryAfter = Exception
+    telegram_error.TimedOut = Exception
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda *args, **kwargs: object()
     botocore = types.ModuleType("botocore")
@@ -152,8 +155,11 @@ class TestCorsIntegration:
 
         import src.config as config_module
 
-        if "api.index" in sys.modules:
-            del sys.modules["api.index"]
+        sys.modules.pop("api.index", None)
+        sys.modules.pop("api.bootstrap", None)
+        for name in list(sys.modules):
+            if name.startswith("api.routes"):
+                sys.modules.pop(name, None)
         importlib.reload(config_module)
         api_module = importlib.import_module("api.index")
 

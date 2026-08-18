@@ -22,6 +22,9 @@ def _stub_external_modules() -> None:
     telegram.Bot = object
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.TelegramError = Exception
+    telegram_error.NetworkError = Exception
+    telegram_error.RetryAfter = Exception
+    telegram_error.TimedOut = Exception
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda *args, **kwargs: object()
     botocore = types.ModuleType("botocore")

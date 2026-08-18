@@ -21,6 +21,10 @@ class LoginLockoutService:
     LOCKOUT_PREFIX = "auth:lockout"
     FAILURE_PREFIX = "auth:fail"
 
+    def __init__(self, kind: str = "auth") -> None:
+        self.LOCKOUT_PREFIX = f"{kind}:lockout"
+        self.FAILURE_PREFIX = f"{kind}:fail"
+
     @property
     def max_attempts(self) -> int:
         return settings.login_max_failed_attempts

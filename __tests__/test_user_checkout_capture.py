@@ -18,7 +18,7 @@ os.environ.setdefault("RAZORPAY_KEY_SECRET", "secret")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.user import User
+from src.models.user import User, UserProfileUpdate
 from src.services.user_service import UserService, address_identity, normalize_phone
 
 
@@ -177,6 +177,32 @@ async def test_skips_email_claimed_by_another_account():
     assert user_id == guest.id
     guest_doc = next(d for d in col.docs if d["id"] == guest.id)
     assert guest_doc.get("email") in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_email_signup_starts_with_phone_unverified():
+    col = FakeUsers()
+    with patch("src.services.user_service.db.get_database", new=_db(col)):
+        user = await UserService().get_or_create_by_email("buyer@example.com")
+    assert user.phone_verified is False
+
+
+@pytest.mark.asyncio
+async def test_profile_phone_change_clears_verification():
+    existing = User(
+        email="buyer@example.com",
+        email_verified=True,
+        phone=None,
+        phone_verified=False,
+    )
+    col = FakeUsers([existing.model_dump()])
+    with patch("src.services.user_service.db.get_database", new=_db(col)):
+        updated = await UserService().update_profile(
+            existing.id, UserProfileUpdate(phone="9876543210")
+        )
+    assert updated is not None
+    assert updated.phone == "9876543210"
+    assert updated.phone_verified is False
 
 
 def test_address_identity_and_phone_normalize():

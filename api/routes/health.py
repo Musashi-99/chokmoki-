@@ -1,6 +1,7 @@
 """Health/liveness/readiness probes and Prometheus metrics."""
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse, Response
+import secrets
 from datetime import datetime, timezone
 import asyncio
 import os
@@ -208,7 +209,8 @@ async def metrics(request: Request):
 
     if settings.is_production:
         token = (request.headers.get("X-Metrics-Token") or "").strip()
-        if not settings.metrics_token or token != settings.metrics_token:
+        expected = (settings.metrics_token or "").strip()
+        if not expected or not token or not secrets.compare_digest(token, expected):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     payload, content_type = render_metrics()

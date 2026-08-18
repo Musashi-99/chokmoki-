@@ -12,6 +12,7 @@ class PolicyPageMeta(BaseModel):
     page_title: str = ""
     page_intro: str = ""
     last_updated_label: str = ""
+    toc_label: str = ""
     active: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -61,4 +62,5 @@ class PolicyPageMetaUpdate(BaseModel):
     page_title: Optional[str] = None
     page_intro: Optional[str] = None
     last_updated_label: Optional[str] = None
+    toc_label: Optional[str] = None
     active: Optional[bool] = None

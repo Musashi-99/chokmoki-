@@ -114,6 +114,9 @@ class TestFraudRulesIntegration:
         monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test")
         monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
         monkeypatch.setenv("FRAUD_ENABLED", "false")
+        monkeypatch.setattr(
+            "src.services.fraud_detection_service.settings.fraud_enabled", False
+        )
 
         service = FraudDetectionService()
         decision = await service.evaluate(

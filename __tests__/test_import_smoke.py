@@ -22,6 +22,9 @@ def _stub_external_modules() -> None:
 
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.TelegramError = Exception
+    telegram_error.NetworkError = Exception
+    telegram_error.RetryAfter = Exception
+    telegram_error.TimedOut = Exception
 
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda *args, **kwargs: object()
@@ -56,10 +59,10 @@ def api_module(monkeypatch):
 
 class TestApiIndexImportSmoke:
     def test_fastapi_import_includes_cookie(self):
-        index_path = os.path.join(ROOT, "api", "index.py")
-        with open(index_path, encoding="utf-8") as handle:
-            first_lines = "".join(handle.readline() for _ in range(3))
-        assert "Cookie" in first_lines
+        auth_path = os.path.join(ROOT, "src", "plugins", "admin_deps.py")
+        with open(auth_path, encoding="utf-8") as handle:
+            source = handle.read()
+        assert "Cookie" in source
 
     def test_module_imports_without_name_error(self, api_module):
         assert api_module is not None
@@ -98,8 +101,17 @@ class TestApiIndexImportSmoke:
         assert "refresh token" in response.json()["detail"].lower()
 
     def test_admin_logout_endpoint_evaluated_with_cookie_dependency(self, api_module):
+        mock_redis = AsyncMock()
+        mock_redis.script_load = AsyncMock(return_value="sha")
+        mock_redis.evalsha = AsyncMock(return_value=[1, 0])
+
         client = TestClient(api_module.app, raise_server_exceptions=True)
-        response = client.post("/api/admin/logout")
+        with patch(
+            "src.plugins.rate_limit.redis_client.get_client",
+            new_callable=AsyncMock,
+            return_value=mock_redis,
+        ):
+            response = client.post("/api/admin/logout")
         assert response.status_code == 200
         assert response.json()["success"] is True
 

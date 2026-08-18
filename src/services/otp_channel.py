@@ -74,7 +74,12 @@ class EmailOtpChannel(OtpChannel):
         redis = await redis_client.get_client()
         key = _redis_key(identifier)
         stored = await redis.get(key)
-        if not stored or stored != _hash_otp(otp):
+        if stored is None:
+            return False
+        if isinstance(stored, bytes):
+            stored = stored.decode("utf-8")
+        candidate = _hash_otp(otp)
+        if not secrets.compare_digest(str(stored), candidate):
             return False
         await redis.delete(key)
         return True

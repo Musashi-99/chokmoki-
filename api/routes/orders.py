@@ -19,6 +19,7 @@ from api.json_utils import JSONEncoder
 
 from src.models.user import CustomerPrincipal
 from src.plugins.customer_deps import resolve_customer_principal_optional
+from src.database.redis_connection import redis_client
 from src.security.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
@@ -26,6 +27,20 @@ from src.security.idempotency import (
 )
 
 router = APIRouter()
+
+
+async def claim_razorpay_event(event: str, payment_id: str) -> bool:
+    """True if this Razorpay event/payment pair has not been seen yet."""
+    if not event or not payment_id:
+        return True
+    client = await redis_client.get_client()
+    claimed = await client.set(
+        f"webhook:razorpay:{event}:{payment_id}",
+        "1",
+        nx=True,
+        ex=86400,
+    )
+    return bool(claimed)
 
 
 @router.post("/api/orders/lookup")
@@ -309,6 +324,11 @@ async def razorpay_webhook(
                 logger.warning(f"Incomplete webhook data (event={event}). Missing: order_id={order_id}, razorpay_order_id={razorpay_order_id}, razorpay_payment_id={razorpay_payment_id}")
                 logger.debug(f"Full webhook payload: {webhook_data}")
                 return JSONResponse(content={"status": "ignored", "reason": "incomplete_data"})
+
+            if not await claim_razorpay_event(event, razorpay_payment_id):
+                return JSONResponse(
+                    content={"status": "accepted", "order_id": order_id, "duplicate": True}
+                )
 
             # Durable, crash-safe processing: verify (above) is the only part
             # that must stay synchronous. The actual Mongo write happens in

@@ -10,7 +10,10 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from src.plugins.customer_cookies import clear_customer_auth_cookies, set_customer_auth_cookies
-from src.plugins.customer_deps import REFRESH_COOKIE
+from src.plugins.customer_deps import REFRESH_COOKIE, enforce_customer_csrf
+from src.security.client_ip import get_client_ip
+from src.security.exceptions import AccountLockedError
+from src.security.login_lockout import LoginLockoutService
 from src.services.customer_auth_service import CustomerAuthService
 
 router = APIRouter()
@@ -53,11 +56,30 @@ async def otp_request(payload: OtpRequestPayload):
 
 
 @router.post("/api/auth/otp/verify")
-async def otp_verify(payload: OtpVerifyPayload):
+async def otp_verify(payload: OtpVerifyPayload, request: Request):
+    lockout = LoginLockoutService(kind="otp")
+    client_ip = get_client_ip(request)
+    try:
+        await lockout.assert_not_locked(client_ip, payload.identifier)
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
+
     result = await CustomerAuthService().verify_otp_and_login(payload.identifier, payload.otp)
     if not result:
+        status = await lockout.record_failure(client_ip, payload.identifier)
+        if status.locked:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Try again later.",
+                headers={"Retry-After": str(status.retry_after_seconds)},
+            )
         raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 
+    await lockout.record_success(client_ip, payload.identifier)
     user, tokens = result
     response = JSONResponse(
         content={
@@ -100,6 +122,7 @@ async def customer_logout(
 
         access_cookie = request.cookies.get(ACCESS_COOKIE)
         if access_cookie:
+            await enforce_customer_csrf(request)
             principal = await auth_service.verify_access_token(access_cookie)
 
     await auth_service.logout(principal, refresh_cookie)

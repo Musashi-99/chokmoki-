@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     # leaked customer token can never be replayed against an admin route,
     # even though both reuse the same JWT_SECRET/algorithm.
     customer_jwt_access_ttl_minutes: int = Field(
-        default=60 * 24 * 7, env="CUSTOMER_JWT_ACCESS_TTL_MINUTES"
+        default=60, env="CUSTOMER_JWT_ACCESS_TTL_MINUTES"
     )
     customer_jwt_refresh_ttl_days: int = Field(default=90, env="CUSTOMER_JWT_REFRESH_TTL_DAYS")
 

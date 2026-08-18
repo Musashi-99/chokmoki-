@@ -111,7 +111,7 @@ class TestProductionConfigGuard:
         monkeypatch.setenv("ADMIN_PASSWORD", STRONG_ADMIN_PASSWORD)
 
         with pytest.raises(ValueError, match="ADMIN_PASSWORD_HASH is required"):
-            Settings()
+            Settings(_env_file=None)
 
     def test_production_rejects_default_admin_password(self, monkeypatch):
         _base_production_env(monkeypatch)
@@ -138,7 +138,7 @@ class TestProductionConfigGuard:
         monkeypatch.delenv("METRICS_TOKEN", raising=False)
 
         with pytest.raises(ValueError, match="METRICS_TOKEN"):
-            Settings()
+            Settings(_env_file=None)
 
     def test_jwt_rotation_secret_is_validated(self, monkeypatch):
         _base_production_env(monkeypatch)
