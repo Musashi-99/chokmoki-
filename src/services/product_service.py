@@ -5,6 +5,7 @@ from src.database.connection import db
 from src.models.product import JewelryProduct, JewelryProductCreate
 from src.plugins.logger import logger
 from src.utils.regex_safe import escape_mongo_regex
+from src.services.product_filters import ids_mongo_filter, merge_mongo_filters
 
 # Optional alerts import
 try:
@@ -106,28 +107,19 @@ class ProductService:
         is_curated: Optional[bool] = None,
         sort: Optional[str] = None,
         search: Optional[str] = None,
+        ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         
-        query: Dict[str, Any] = {}
-        if active is not None:
-            query["active"] = active
-        if category:
-            query["category"] = category
-        if is_best_seller is not None:
-            query["is_best_seller"] = is_best_seller
-        if is_curated is not None:
-            query["is_curated"] = is_curated
-        if search:
-            safe = escape_mongo_regex(search)
-            query["$or"] = [
-                {"name": {"$regex": safe, "$options": "i"}},
-                {"description": {"$regex": safe, "$options": "i"}},
-                {"material": {"$regex": safe, "$options": "i"}},
-                {"slug": {"$regex": safe, "$options": "i"}},
-            ]
-        
+        query = self._list_query(
+            active=active,
+            category=category,
+            is_best_seller=is_best_seller,
+            is_curated=is_curated,
+            search=search,
+            ids=ids,
+        )
         cursor = collection.find(query)
         
         if is_best_seller:
@@ -145,18 +137,16 @@ class ProductService:
         products = await cursor.to_list(length=limit)
         
         return [JewelryProduct(**product).model_dump(by_alias=True) for product in products]
-    
-    async def count(
+
+    def _list_query(
         self,
         active: Optional[bool] = None,
         category: Optional[str] = None,
         is_best_seller: Optional[bool] = None,
         is_curated: Optional[bool] = None,
         search: Optional[str] = None,
-    ) -> int:
-        database = await db.get_database()
-        collection = database[self.COLLECTION_NAME]
-        
+        ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         query: Dict[str, Any] = {}
         if active is not None:
             query["active"] = active
@@ -166,15 +156,38 @@ class ProductService:
             query["is_best_seller"] = is_best_seller
         if is_curated is not None:
             query["is_curated"] = is_curated
+        search_clause = None
         if search:
             safe = escape_mongo_regex(search)
-            query["$or"] = [
-                {"name": {"$regex": safe, "$options": "i"}},
-                {"description": {"$regex": safe, "$options": "i"}},
-                {"material": {"$regex": safe, "$options": "i"}},
-                {"slug": {"$regex": safe, "$options": "i"}},
-            ]
-        
+            search_clause = {
+                "$or": [
+                    {"name": {"$regex": safe, "$options": "i"}},
+                    {"description": {"$regex": safe, "$options": "i"}},
+                    {"material": {"$regex": safe, "$options": "i"}},
+                    {"slug": {"$regex": safe, "$options": "i"}},
+                ]
+            }
+        return merge_mongo_filters(query or None, search_clause, ids_mongo_filter(ids))
+    
+    async def count(
+        self,
+        active: Optional[bool] = None,
+        category: Optional[str] = None,
+        is_best_seller: Optional[bool] = None,
+        is_curated: Optional[bool] = None,
+        search: Optional[str] = None,
+        ids: Optional[List[str]] = None,
+    ) -> int:
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        query = self._list_query(
+            active=active,
+            category=category,
+            is_best_seller=is_best_seller,
+            is_curated=is_curated,
+            search=search,
+            ids=ids,
+        )
         return await collection.count_documents(query)
     
     async def update(self, product_id: str, update_data: Dict[str, Any]) -> Optional[JewelryProduct]:

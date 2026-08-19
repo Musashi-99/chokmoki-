@@ -25,7 +25,7 @@ class CustomerAuthService:
     def __init__(self) -> None:
         self.sessions = CustomerSessionService()
         self.users = UserService()
-        self.lockout = LoginLockoutService()
+        self.lockout = LoginLockoutService(kind="otp")
 
     def _channel(self) -> OtpChannel:
         return EmailOtpChannel()

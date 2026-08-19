@@ -34,6 +34,9 @@ def _stub_external_modules() -> None:
     telegram.Bot = object
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.TelegramError = Exception
+    telegram_error.NetworkError = Exception
+    telegram_error.RetryAfter = Exception
+    telegram_error.TimedOut = Exception
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda *args, **kwargs: object()
     botocore = types.ModuleType("botocore")
@@ -152,18 +155,38 @@ class TestCorsIntegration:
 
         import src.config as config_module
 
-        if "api.index" in sys.modules:
-            del sys.modules["api.index"]
-        importlib.reload(config_module)
-        api_module = importlib.import_module("api.index")
+        # Snapshot the currently-imported api.index/api.bootstrap/api.routes.*
+        # module objects before popping them, so they can be put back
+        # afterwards. Other test files import symbols (functions, mock
+        # patch targets) from these modules at collection time, before any
+        # test runs — if we swap in fresh reloaded module objects here and
+        # never restore the originals, every later test still holds
+        # references bound to the OLD module objects while unittest.mock's
+        # `patch("api.routes.x.y")` resolves against the NEW ones, silently
+        # patching a different object than the one actually running.
+        affected_names = {"api.index", "api.bootstrap"} | {
+            name for name in sys.modules if name.startswith("api.routes")
+        }
+        saved_modules = {name: sys.modules[name] for name in affected_names if name in sys.modules}
+        try:
+            for name in affected_names:
+                sys.modules.pop(name, None)
+            importlib.reload(config_module)
+            api_module = importlib.import_module("api.index")
 
-        with patch(
-            "src.plugins.rate_limit.redis_client.get_client",
-            new_callable=AsyncMock,
-        ), patch.object(
-            api_module, "ProductService", create=True
-        ):
-            yield TestClient(api_module.app)
+            with patch(
+                "src.plugins.rate_limit.redis_client.get_client",
+                new_callable=AsyncMock,
+            ), patch.object(
+                api_module, "ProductService", create=True
+            ):
+                yield TestClient(api_module.app)
+        finally:
+            for name in list(sys.modules):
+                if name == "api.index" or name == "api.bootstrap" or name.startswith("api.routes"):
+                    if name not in saved_modules:
+                        sys.modules.pop(name, None)
+            sys.modules.update(saved_modules)
 
     def test_allowed_origin_receives_cors_headers(self, cors_client):
         response = cors_client.options(

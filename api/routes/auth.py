@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from src.plugins.customer_cookies import clear_customer_auth_cookies, set_customer_auth_cookies
-from src.plugins.customer_deps import REFRESH_COOKIE
+from src.plugins.customer_deps import REFRESH_COOKIE, enforce_customer_csrf
 from src.security.client_ip import get_client_ip
 from src.security.exceptions import AccountLockedError
 from src.services.customer_auth_service import CustomerAuthService
@@ -56,12 +56,20 @@ async def otp_request(payload: OtpRequestPayload):
 
 @router.post("/api/auth/otp/verify")
 async def otp_verify(payload: OtpVerifyPayload, request: Request):
+    # Lockout tracking (kind="otp") lives inside CustomerAuthService itself —
+    # assert/record-failure/record-success all happen there so every caller
+    # of verify_otp_and_login gets it for free, rather than duplicating the
+    # check here at the route level.
     try:
         result = await CustomerAuthService().verify_otp_and_login(
             payload.identifier, payload.otp, ip=get_client_ip(request)
         )
-    except AccountLockedError:
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
     if not result:
         raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 
@@ -107,6 +115,7 @@ async def customer_logout(
 
         access_cookie = request.cookies.get(ACCESS_COOKIE)
         if access_cookie:
+            await enforce_customer_csrf(request)
             principal = await auth_service.verify_access_token(access_cookie)
 
     await auth_service.logout(principal, refresh_cookie)

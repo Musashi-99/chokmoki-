@@ -74,7 +74,13 @@ class PolicyContentService:
             doc = await collection.find_one({"meta_key": META_KEY})
         else:
             payload.setdefault("active", True)
-            for field in ("page_eyebrow", "page_title", "page_intro", "last_updated_label"):
+            for field in (
+                "page_eyebrow",
+                "page_title",
+                "page_intro",
+                "last_updated_label",
+                "toc_label",
+            ):
                 payload.setdefault(field, "")
             result = await collection.insert_one(payload)
             doc = await collection.find_one({"_id": result.inserted_id})

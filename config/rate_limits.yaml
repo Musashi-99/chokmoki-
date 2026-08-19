@@ -95,16 +95,22 @@ rules:
         window: 15m
         burst: 5
 
-  # Public, unauthenticated coupon-code probe surface.
-  - id: coupon_preview
+  # Public, unauthenticated coupon-code probe surface. code-scope bucket
+  # guards against brute-forcing a specific coupon code, not just volume.
+  - id: coupons_preview
     match:
       methods: [POST]
       paths: [/api/coupons/preview]
     buckets:
       - scope: ip
-        rate: 30
-        window: 5m
-        burst: 15
+        rate: 20
+        window: 1h
+        burst: 8
+      - scope: email
+        field: code
+        rate: 10
+        window: 1h
+        burst: 5
 
   - id: contact
     match:

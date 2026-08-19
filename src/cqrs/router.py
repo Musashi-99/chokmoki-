@@ -139,6 +139,13 @@ class CQRSRouter:
         "category.delete",
         "order.getLog",
         "order.updateStatus",
+        "order.list",
+        "order.get",
+        "shippingAddress.list",
+        "shippingAddress.get",
+        "shippingAddress.create",
+        "shippingAddress.update",
+        "shippingAddress.delete",
     }
 
     @classmethod

@@ -22,4 +22,4 @@ def test_otp_verify_has_a_dedicated_identifier_scoped_rule():
 def test_coupon_preview_has_a_dedicated_rule():
     rules = load_rate_limit_rules()
     matched = match_rules(rules, method="POST", path="/api/coupons/preview", operation=None)
-    assert "coupon_preview" in [r.id for r in matched]
+    assert "coupons_preview" in [r.id for r in matched]

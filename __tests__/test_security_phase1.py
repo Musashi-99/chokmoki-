@@ -68,23 +68,12 @@ class TestCQRSOrderAuthorization:
                 )
 
     @pytest.mark.asyncio
-    async def test_order_get_allows_matching_email(self):
-        mock_order = MagicMock()
-        mock_order.user_email = "owner@example.com"
-
-        with patch(
-            "src.cqrs.router.OrderService"
-        ) as mock_service_cls, patch.object(
-            CQRSRouter.QUERIES["order.get"], "execute", new_callable=AsyncMock
-        ) as mock_execute:
-            mock_service_cls.return_value.get_by_id = AsyncMock(return_value=mock_order)
-            mock_execute.return_value = {"data": {"order_id": "order-1"}}
-
-            result = await CQRSRouter.execute_query(
+    async def test_order_get_matching_email_still_requires_admin(self):
+        with pytest.raises(AuthorizationError):
+            await CQRSRouter.execute_query(
                 "order.get",
                 {"id": "order-1", "userEmail": "owner@example.com"},
             )
-            assert result["data"]["order_id"] == "order-1"
 
     @pytest.mark.asyncio
     async def test_order_get_log_requires_admin(self):

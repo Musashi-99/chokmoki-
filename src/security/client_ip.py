@@ -97,6 +97,8 @@ AUTH_SENSITIVE_PATHS: Sequence[str] = (
     "/api/admin/login",
     "/api/admin/refresh",
     "/api/admin/logout",
+    "/api/auth/otp/request",
+    "/api/auth/otp/verify",
 )
 
 

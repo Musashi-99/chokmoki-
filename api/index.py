@@ -110,8 +110,13 @@ async def lifespan(app: FastAPI):
         print(f"Shutdown connection error: {e}", file=sys.stderr)
 
 
+from src.security.openapi import fastapi_docs_kwargs
+
 # Export THIS ONLY
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    **fastapi_docs_kwargs(bool(settings and settings.is_production)),
+)
 
 if logger is not None:
     register_exception_handlers(app, logger)
@@ -130,6 +135,10 @@ if CorrelationIdMiddleware:
 from src.middleware.metrics_middleware import MetricsMiddleware
 
 app.add_middleware(MetricsMiddleware)
+
+from src.middleware.security_headers import SecurityHeadersMiddleware
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 from api.routes import (

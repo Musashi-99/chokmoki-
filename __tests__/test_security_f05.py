@@ -25,6 +25,12 @@ class FakeRedis:
     async def get(self, key: str):
         return self.store.get(key)
 
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.store else 0
+
+    async def getdel(self, key: str):
+        return self.store.pop(key, None)
+
     async def set(
         self,
         key: str,
@@ -221,7 +227,9 @@ class TestInventoryCommit:
             return_value=fake_redis,
         ), patch.object(
             service, "_atomic_decrement", new_callable=AsyncMock, return_value=True
-        ) as decrement:
+        ) as decrement, patch.object(
+            service, "_resolve_durable_mirror", new_callable=AsyncMock, return_value=None
+        ):
             await service.commit_reservation(order_id)
 
         decrement.assert_awaited_once_with(product_id, 2)
@@ -267,10 +275,33 @@ class TestInventoryReconcile:
         )
         fake_redis.ttls["inv:order:fresh-order"] = 600
 
+        class _EmptyCursor:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        class _FakeCollection:
+            def find(self, *args, **kwargs):
+                return _EmptyCursor()
+
+        class _FakeDatabase(dict):
+            def __getitem__(self, name):
+                return _FakeCollection()
+
         with patch(
             "src.services.inventory_service.redis_client.get_client",
             new_callable=AsyncMock,
             return_value=fake_redis,
+        ), patch(
+            "src.services.inventory_service.db.get_database",
+            new_callable=AsyncMock,
+            return_value=_FakeDatabase(),
+        ), patch.object(
+            service, "_resolve_durable_mirror", new_callable=AsyncMock, return_value=None
+        ), patch.object(
+            service, "_sync_availability_status", new_callable=AsyncMock
         ):
             released = await service.reconcile_stale_reservations()
 
@@ -349,6 +380,16 @@ class TestOrderServiceInventoryHooks:
             "src.services.order_service.redis_client.get_client",
             new_callable=AsyncMock,
             return_value=fake_redis,
+        ), patch(
+            "src.resilience.circuit_breaker.redis_client.get_client",
+            new_callable=AsyncMock,
+            return_value=fake_redis,
+        ), patch(
+            "src.services.order_service.order_ledger.append_event",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.order_service.PaymentReconciliationService.record_attempt",
+            new_callable=AsyncMock,
         ), patch(
             "src.services.order_service.RazorpayService"
         ) as razorpay_cls:

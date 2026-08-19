@@ -13,9 +13,10 @@ class ProductListQuery(CommandQuery):
         category = params.get("category")
         sort = params.get("sort")
         search = params.get("search")
+        ids = params.get("ids")
         
-        products = await service.list(skip=skip, limit=limit, active=active, category=category, sort=sort, search=search)
-        total = await service.count(active=active, category=category, search=search)
+        products = await service.list(skip=skip, limit=limit, active=active, category=category, sort=sort, search=search, ids=ids)
+        total = await service.count(active=active, category=category, search=search, ids=ids)
         return ListResponseDTO(data=products, count=total).model_dump()
 
 

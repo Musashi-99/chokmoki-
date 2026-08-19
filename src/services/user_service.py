@@ -117,7 +117,7 @@ class UserService:
             existing["last_login_at"] = now
             return User(**existing)
 
-        user = User(email=email, email_verified=True, last_login_at=now)
+        user = User(email=email, email_verified=True, phone_verified=False, last_login_at=now)
         doc = user.model_dump()
         try:
             await collection.insert_one(doc)
@@ -137,6 +137,7 @@ class UserService:
             return await self.get_by_id(user_id)
         if "phone" in patch and patch["phone"]:
             patch["phone"] = normalize_phone(patch["phone"])
+            patch["phone_verified"] = False
         if "email" in patch and patch["email"]:
             patch["email"] = normalize_email(patch["email"])
         patch["updated_at"] = datetime.utcnow()
