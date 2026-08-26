@@ -12,6 +12,7 @@ class ContactPageSettings(BaseModel):
     postcard_eyebrow: str = ""
     postcard_title: str = ""
     postcard_intro: str = ""
+    postcard_image_url: str = ""
     studio_eyebrow: str = ""
     studio_title: str = ""
     studio_tagline: str = ""
@@ -34,6 +35,7 @@ class ContactPageSettingsUpdate(BaseModel):
     postcard_eyebrow: Optional[str] = None
     postcard_title: Optional[str] = None
     postcard_intro: Optional[str] = None
+    postcard_image_url: Optional[str] = None
     studio_eyebrow: Optional[str] = None
     studio_title: Optional[str] = None
     studio_tagline: Optional[str] = None
