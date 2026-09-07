@@ -14,6 +14,7 @@ from bson import ObjectId
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.order import RegionAudit, ValidatedOrderItem
+from src.models.product import MarketStock
 from src.services.inventory_service import InventoryService
 
 
@@ -141,7 +142,10 @@ class TestInventoryReserveAndRelease:
             new_callable=AsyncMock,
             return_value=fake_redis,
         ), patch.object(
-            service, "_get_stock_qty", new_callable=AsyncMock, return_value=5
+            service,
+            "_get_stock_entry",
+            new_callable=AsyncMock,
+            return_value=MarketStock(country="IN", qty=5, status="in_stock"),
         ):
             await service.reserve_for_order(order_id, [_item(product_id, 2)], "IN")
 
@@ -175,7 +179,10 @@ class TestInventoryReserveAndRelease:
             new_callable=AsyncMock,
             return_value=fake_redis,
         ), patch.object(
-            service, "_get_stock_qty", new_callable=AsyncMock, return_value=5
+            service,
+            "_get_stock_entry",
+            new_callable=AsyncMock,
+            return_value=MarketStock(country="IN", qty=5, status="in_stock"),
         ):
             with pytest.raises(ValueError, match="Insufficient stock"):
                 await service.reserve_for_order("order-2", [_item(product_id, 2)], "IN")
@@ -197,7 +204,7 @@ class TestInventoryReserveAndRelease:
             new_callable=AsyncMock,
             return_value=fake_redis,
         ), patch.object(
-            service, "_get_stock_qty", new_callable=AsyncMock, return_value=None
+            service, "_get_stock_entry", new_callable=AsyncMock, return_value=None
         ):
             await service.reserve_for_order("order-3", [_item(product_id, 1)], "IN")
 
@@ -248,12 +255,77 @@ class TestInventoryCommit:
         service = InventoryService()
 
         with patch.object(
-            service, "_get_stock_qty", new_callable=AsyncMock, return_value=1
+            service,
+            "_get_stock_entry",
+            new_callable=AsyncMock,
+            return_value=MarketStock(country="IN", qty=1, status="in_stock"),
         ), patch.object(
             service, "_atomic_decrement", new_callable=AsyncMock, return_value=False
         ):
             with pytest.raises(ValueError, match="Insufficient stock"):
                 await service.commit_items([_item(product_id, 2)], "IN")
+
+    @pytest.mark.asyncio
+    async def test_commit_items_decrements_the_resolved_bucket_not_the_requested_region(
+        self, monkeypatch, product_id
+    ):
+        """Regression: an AU order with no dedicated "AU" stock row must
+        decrement the "default" bucket it actually resolved to — not look
+        for a nonexistent "AU" row and fail as "insufficient stock" even
+        though the default bucket has plenty."""
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
+        monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test")
+        monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
+
+        service = InventoryService()
+
+        with patch.object(
+            service,
+            "_get_stock_entry",
+            new_callable=AsyncMock,
+            return_value=MarketStock(country="default", qty=50, status="in_stock"),
+        ), patch.object(
+            service, "_atomic_decrement", new_callable=AsyncMock, return_value=True
+        ) as decrement:
+            await service.commit_items([_item(product_id, 1)], "AU")
+
+        decrement.assert_awaited_once_with(product_id, "default", 1)
+
+    @pytest.mark.asyncio
+    async def test_reserve_for_order_reserves_against_the_resolved_bucket(
+        self, monkeypatch, fake_redis, product_id
+    ):
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
+        monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test")
+        monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
+
+        service = InventoryService()
+        database = MagicMock()
+        database.__getitem__ = MagicMock(return_value=AsyncMock())
+
+        with patch(
+            "src.services.inventory_service.redis_client.get_client",
+            new_callable=AsyncMock,
+            return_value=fake_redis,
+        ), patch(
+            "src.services.inventory_service.db.get_database",
+            new_callable=AsyncMock,
+            return_value=database,
+        ), patch.object(
+            service,
+            "_get_stock_entry",
+            new_callable=AsyncMock,
+            return_value=MarketStock(country="default", qty=50, status="in_stock"),
+        ):
+            await service.reserve_for_order("order-au-1", [_item(product_id, 2)], "AU")
+
+        # Keyed by the resolved "default" bucket, not the requested "AU".
+        assert fake_redis.store[f"inv:pending:{product_id}:default"] == "2"
+        assert f"inv:pending:{product_id}:AU" not in fake_redis.store
+        lines = json.loads(fake_redis.store["inv:order:order-au-1"])
+        assert lines[0]["bucket"] == "default"
 
 
 class TestInventoryReconcile:
