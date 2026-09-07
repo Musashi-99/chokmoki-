@@ -49,6 +49,16 @@ except ImportError:
     publish_alert = None
 
 
+_INDIA_ADDRESS_NAMES = {"india", "in", "bharat"}
+
+
+def _is_india_address(shipping_country: Optional[str]) -> bool:
+    """The shipping address's free-text country field (not the pricing
+    region) — Shiprocket only ships within India today, so this is checked
+    independently of which market a customer priced/paid in."""
+    return (shipping_country or "").strip().lower() in _INDIA_ADDRESS_NAMES
+
+
 def _order_alert_payload(order_dict: dict) -> dict:
     shipping_address = order_dict.get("shipping_address") or {}
     return {
@@ -1147,16 +1157,32 @@ class OrderService:
         region_audit = await self._resolve_region(order_data, ip, user_agent)
         country = region_audit.pricing_country_used
 
-        checkout_enabled = {
-            c.strip().upper() for c in (settings.checkout_enabled_countries or "").split(",") if c.strip()
-        }
-        if country not in checkout_enabled:
-            # Browsing/pricing is multi-region already; checkout isn't yet —
-            # AU/NZ/default have no working payment gateway wired up. Reject
-            # early, before inventory/fraud work, with a message the
-            # storefront can show as-is.
+        # COD needs no payment gateway, so it's available from every market.
+        # Paying online now (Razorpay) only works in INR today — reject that
+        # combination early, before inventory/fraud work, with a message the
+        # storefront can show as-is. Shipping/courier fulfillment is a
+        # separate, later gate (see InventoryService/CourierProvider) — this
+        # is only the payment-capability check.
+        payment_method = (order_data.paymentMethod or "cod").strip().lower()
+        if payment_method == "razorpay":
+            prepaid_enabled = {
+                c.strip().upper() for c in (settings.prepaid_enabled_countries or "").split(",") if c.strip()
+            }
+            if country not in prepaid_enabled:
+                raise ValueError(
+                    "Online prepaid payment isn't available in your region yet — "
+                    "please choose Cash on Delivery, or switch to India to pay online."
+                )
+
+        # Fulfillment (Shiprocket) only ships within India today — see
+        # src/shipping/courier_provider.py. A customer can legitimately
+        # browse in AUD/NZD and still pay COD (that's now allowed from any
+        # region), but the parcel itself can only go to an Indian address,
+        # so this is checked regardless of pricing region or payment
+        # method — it's a physical constraint, not a market-availability one.
+        if not _is_india_address(order_data.shippingAddress.country):
             raise ValueError(
-                "Orders aren't available in your region yet — please switch to India to check out."
+                "We can only ship within India right now — please use an Indian shipping address."
             )
 
         min_qty = settings.order_min_quantity

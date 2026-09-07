@@ -10,7 +10,6 @@ from api.bootstrap import (
     OrderStatus,
     ProductService,
     ShiprocketAPIError,
-    ShiprocketService,
     db,
     get_client_ip,
     logger,
@@ -18,6 +17,7 @@ from api.bootstrap import (
 )
 from api.json_utils import JSONEncoder, _json_response_content
 from src.services import order_ledger
+from src.shipping.courier_provider import CourierUnavailableError, get_courier_provider, order_country
 from src.utils.money import money
 from src.utils.revenue import revenue_mongo_match
 
@@ -317,19 +317,27 @@ async def admin_mark_order_packed(order_id: str, email: str = Depends(require_ad
     return {"success": True, "fulfillment_status": "packed"}
 
 
-@router.get("/api/admin/orders/{order_id}/shiprocket/couriers")
-async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_admin)):
-    """Live courier quotes for the 'Ready to Ship' picker — no shipment created yet."""
-    if OrderService is None or ShiprocketService is None:
-        raise HTTPException(status_code=500, detail="Server not initialized")
-
+async def _get_order_doc_or_404(order_id: str) -> Dict[str, Any]:
     database = await db.get_database()
     order_doc = await database["orders"].find_one({"order_id": order_id})
     if not order_doc:
         raise HTTPException(status_code=404, detail="Order not found")
+    return order_doc
+
+
+@router.get("/api/admin/orders/{order_id}/shiprocket/couriers")
+async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_admin)):
+    """Live courier quotes for the 'Ready to Ship' picker — no shipment created yet."""
+    if OrderService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    order_doc = await _get_order_doc_or_404(order_id)
+    provider = get_courier_provider(order_country(order_doc))
 
     try:
-        quotes = await ShiprocketService().get_courier_quotes(order_doc)
+        quotes = await provider.get_courier_quotes(order_doc)
+    except CourierUnavailableError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except ShiprocketAPIError as e:
         # 400, not 502: Shiprocket failures here are business-rule rejections
         # an admin can act on (wallet balance, bad pickup config, no couriers
@@ -347,14 +355,18 @@ async def admin_ship_order(
     """'Ready to Ship': create the shipment, assign AWB (auto or the given
     courier_company_id), generate label + invoice, schedule pickup.
     """
-    if OrderService is None or ShiprocketService is None:
+    if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
+    order_doc = await _get_order_doc_or_404(order_id)
+    provider = get_courier_provider(order_country(order_doc))
     payload = payload or {}
     courier_company_id = payload.get("courier_company_id")
 
     try:
-        result = await ShiprocketService().ship_order(order_id, courier_company_id=courier_company_id)
+        result = await provider.ship_order(order_id, courier_company_id=courier_company_id)
+    except CourierUnavailableError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ShiprocketAPIError as e:
@@ -374,10 +386,12 @@ async def admin_ship_order(
 
 @router.post("/api/admin/orders/{order_id}/shiprocket/cancel")
 async def admin_cancel_shipment(order_id: str, email: str = Depends(require_admin)):
-    if ShiprocketService is None:
-        raise HTTPException(status_code=500, detail="Server not initialized")
+    order_doc = await _get_order_doc_or_404(order_id)
+    provider = get_courier_provider(order_country(order_doc))
     try:
-        result = await ShiprocketService().cancel_shipment(order_id)
+        result = await provider.cancel_shipment(order_id)
+    except CourierUnavailableError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ShiprocketAPIError as e:
@@ -392,10 +406,12 @@ async def admin_cancel_shipment(order_id: str, email: str = Depends(require_admi
 
 @router.get("/api/admin/orders/{order_id}/shiprocket/track")
 async def admin_track_shipment(order_id: str, email: str = Depends(require_admin)):
-    if ShiprocketService is None:
-        raise HTTPException(status_code=500, detail="Server not initialized")
+    order_doc = await _get_order_doc_or_404(order_id)
+    provider = get_courier_provider(order_country(order_doc))
     try:
-        tracking = await ShiprocketService().track(order_id)
+        tracking = await provider.track(order_id)
+    except CourierUnavailableError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ShiprocketAPIError as e:

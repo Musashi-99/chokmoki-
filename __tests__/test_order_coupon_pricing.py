@@ -113,7 +113,7 @@ async def _run_guarded(*, fn, **_kwargs):
 
 
 @contextmanager
-def order_pipeline_mocks(coupon=None, product=None):
+def order_pipeline_mocks(coupon=None, product=None, region_audit=None):
     product = product or _catalog_product()
     mock_ps = MagicMock()
     mock_ps.get_by_id = AsyncMock(return_value=product)
@@ -137,17 +137,19 @@ def order_pipeline_mocks(coupon=None, product=None):
         inv_cls = stack.enter_context(patch("src.services.order_service.InventoryService"))
         inv_cls.return_value.commit_items = AsyncMock()
         inv_cls.return_value.reserve_for_order = AsyncMock()
-        # Multi-region checkout gating (order_service._resolve_region) always
-        # resolves to a real GeoIP lookup otherwise, which has no network
-        # access in tests and would fall through to "default" — rejected by
-        # CHECKOUT_ENABLED_COUNTRIES=IN. These tests are about coupon/pricing
-        # math, not region resolution, so pin it to India.
+        # Multi-region gating (order_service._resolve_region) always resolves
+        # to a real GeoIP lookup otherwise, which has no network access in
+        # tests and would fall through to "default" — rejected for the
+        # razorpay/initiate_order tests below by PREPAID_ENABLED_COUNTRIES=IN.
+        # These tests are about coupon/pricing math, not region resolution,
+        # so pin it to India.
         stack.enter_context(
             patch.object(
                 OrderService,
                 "_resolve_region",
                 new_callable=AsyncMock,
-                return_value=RegionAudit(pricing_country_used="IN", selected_country="IN"),
+                return_value=region_audit
+                or RegionAudit(pricing_country_used="IN", selected_country="IN"),
             )
         )
         stack.enter_context(
@@ -398,3 +400,87 @@ class TestBuildOrderQueryCoupon:
         query = OrderService()._build_order_query(search="priya", coupon="KRISH20")
         assert query["applied_discount.code"] == "KRISH20"
         assert "$or" in query
+
+    def test_country_filter_matches_pricing_country_used(self):
+        query = OrderService()._build_order_query(country="au")
+        assert query["region_audit.pricing_country_used"] == "AU"
+
+    def test_country_filter_default_bucket_stays_lowercase(self):
+        query = OrderService()._build_order_query(country="default")
+        assert query["region_audit.pricing_country_used"] == "default"
+
+
+class TestRegionCheckoutPolicy:
+    """COD needs no payment gateway, so it's allowed from every region.
+    Razorpay (pay online now) is India-only. Shipping is India-only
+    regardless of region or payment method (Shiprocket doesn't ship
+    internationally yet)."""
+
+    @pytest.mark.asyncio
+    async def test_cod_order_allowed_from_australia(self):
+        order_data = OrderCreateInput(**_order_payload(paymentMethod="cod"))
+        au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
+
+        with order_pipeline_mocks(region_audit=au_region) as mocks:
+            order = await OrderService().create(order_data)
+
+        mocks.orders.insert_one.assert_awaited_once()
+        assert order.order_id
+
+    @pytest.mark.asyncio
+    async def test_razorpay_rejected_from_australia(self):
+        order_data = OrderCreateInput(**_order_payload(paymentMethod="razorpay"))
+        au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
+
+        with order_pipeline_mocks(region_audit=au_region):
+            with pytest.raises(ValueError, match="Online prepaid payment"):
+                await OrderService().initiate_order(order_data)
+
+    @pytest.mark.asyncio
+    async def test_non_india_shipping_address_rejected_even_for_cod_from_india_region(self):
+        order_data = OrderCreateInput(
+            **_order_payload(
+                paymentMethod="cod",
+                shippingAddress={
+                    "email": "x@test.com",
+                    "full_name": "X",
+                    "phone": "9999999999",
+                    "address_line1": "a",
+                    "address_line2": "",
+                    "city": "c",
+                    "state": "s",
+                    "postal_code": "1",
+                    "country": "Australia",
+                    "is_default": False,
+                },
+            )
+        )
+
+        with order_pipeline_mocks():
+            with pytest.raises(ValueError, match="only ship within India"):
+                await OrderService().create(order_data)
+
+    @pytest.mark.asyncio
+    async def test_cod_order_from_australia_still_requires_india_shipping_address(self):
+        order_data = OrderCreateInput(
+            **_order_payload(
+                paymentMethod="cod",
+                shippingAddress={
+                    "email": "x@test.com",
+                    "full_name": "X",
+                    "phone": "9999999999",
+                    "address_line1": "a",
+                    "address_line2": "",
+                    "city": "c",
+                    "state": "s",
+                    "postal_code": "1",
+                    "country": "Australia",
+                    "is_default": False,
+                },
+            )
+        )
+        au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
+
+        with order_pipeline_mocks(region_audit=au_region):
+            with pytest.raises(ValueError, match="only ship within India"):
+                await OrderService().create(order_data)

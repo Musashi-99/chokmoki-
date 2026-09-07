@@ -344,13 +344,14 @@ class Settings(BaseSettings):
     supported_market_countries: str = Field(
         default="IN,AU,NZ", env="SUPPORTED_MARKET_COUNTRIES"
     )
-    # Markets that can actually complete checkout today (payment gateway +
-    # fulfillment both work). AU/NZ/default are priceable and browsable
-    # (supported_market_countries) but have no working payment processor
-    # yet, so orders from those markets are rejected with a clear message
-    # until a gateway is wired up for them — see order_service.py.
-    checkout_enabled_countries: str = Field(
-        default="IN", env="CHECKOUT_ENABLED_COUNTRIES"
+    # Markets that can pay online today (Razorpay only supports INR). COD
+    # has no such gate — it needs no payment gateway, so it's available
+    # from every market. AU/NZ/default are priceable, browsable, and can
+    # check out via COD; only the "pay online now" option is India-only
+    # until a gateway that handles AUD/NZD is wired up — see
+    # order_service.py's _validate_and_prepare_order.
+    prepaid_enabled_countries: str = Field(
+        default="IN", env="PREPAID_ENABLED_COUNTRIES"
     )
 
     # Idempotency
