@@ -70,6 +70,13 @@ class ValidatedOrderItem(BaseModel):
     unit_price: float
     total_price: float
     size: Optional[str] = None
+    # Which MarketPrice bucket this item was actually priced in — resolved
+    # once per order (see OrderService._validate_and_prepare_order) and
+    # carried all the way to the Order document, so nothing downstream
+    # (ThankYou page, invoices) has to guess the currency from a country
+    # code after the fact. Defaults match the legacy price_inr path.
+    currency: str = "INR"
+    sym: str = "₹"
 
 
 class OrderStatusExtras(BaseModel):
@@ -144,6 +151,14 @@ class Order(BaseModel):
     discount: float
     shipping: float
     total_amount: float
+    # The currency every amount on this order (subtotal/discount/shipping/
+    # total_amount, and each item's unit_price/total_price) is actually
+    # denominated in — resolved once at order-creation time from the
+    # MarketPrice bucket used (see ValidatedOrderItem.currency). Never
+    # inferred after the fact from region_audit, so a customer's confirmation
+    # page and any invoice always show the real currency they were charged.
+    currency: str = "INR"
+    currency_symbol: str = "₹"
     applied_discount: Optional[AppliedDiscount] = None
     payment_method: Optional[Literal["razorpay", "cod"]] = "cod"
     payment_status: Optional[Literal["pending", "completed", "failed"]] = None

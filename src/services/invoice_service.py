@@ -40,6 +40,7 @@ from src.config import settings
 from src.database.connection import db
 from src.services.discount_service import coupon_product_ids
 from src.utils.money import allocate_shares, inr_to_paise, money
+from src.utils.region import is_india_address
 
 ORDERS_COLLECTION = "orders"
 COUNTERS_COLLECTION = "counters"
@@ -225,6 +226,15 @@ class InvoiceService:
 
     # ---- GST math -------------------------------------------------------
 
+    def is_india_order(self, order_doc: Dict[str, Any]) -> bool:
+        """GST (CGST/SGST/IGST) only applies to a domestic supply — an order
+        shipping outside India is an export, which this business isn't set
+        up to charge Indian GST on. Checked against the actual shipping
+        address (not `region_audit.pricing_country_used`, which only picked
+        a price bucket) so this can never disagree with the physical
+        destination of the parcel."""
+        return is_india_address((order_doc.get("shipping_address") or {}).get("country"))
+
     def _is_intra_state(self, order_doc: Dict[str, Any]) -> bool:
         customer_state = (order_doc.get("shipping_address") or {}).get("state") or ""
         seller_state = settings.invoice_seller_state
@@ -253,7 +263,7 @@ class InvoiceService:
         """
         rate = (
             Decimal(str(settings.gst_total_percent)) / Decimal("100")
-            if settings.gst_enabled
+            if settings.gst_enabled and self.is_india_order(order_doc)
             else Decimal("0")
         )
         split_tax = doc_type != "bill_of_supply" and rate > 0
@@ -337,6 +347,28 @@ class InvoiceService:
 
         if doc_type not in DOC_TITLES:
             raise ValueError(f"Unknown document type: {doc_type}")
+
+        is_india = self.is_india_order(order_doc)
+        if doc_type == "tax_invoice" and not is_india:
+            # A "Tax Invoice" is specifically a domestic-GST document — an
+            # export has no CGST/SGST/IGST to charge, so this document type
+            # simply doesn't apply. The admin route rejects this before ever
+            # calling build_pdf; this is the defense-in-depth copy of that
+            # same check for any other caller.
+            raise ValueError(
+                "Tax Invoice (GST) is only issued for orders shipping within India — "
+                "use Bill of Supply for this order."
+            )
+        # The amount fields on this order were resolved once, at
+        # order-creation time, against whichever MarketPrice bucket actually
+        # priced it (see ValidatedOrderItem.currency in order_service.py) —
+        # never re-derived here from region_audit/country, so this always
+        # matches what the customer was actually charged.
+        currency_sym = order_doc.get("currency_symbol") or "₹"
+        currency_code = (order_doc.get("currency") or "INR").upper()
+
+        def fmt_money(value: float) -> str:
+            return f"{currency_sym} {value:.2f}"
 
         buffer = io.BytesIO()
         page_w, page_h = A4
@@ -463,17 +495,17 @@ class InvoiceService:
         # -- Items table
         rows = self._tax_lines(order_doc, doc_type)
         intra = self._is_intra_state(order_doc)
-        show_tax = doc_type != "bill_of_supply" and settings.gst_enabled
+        show_tax = doc_type != "bill_of_supply" and settings.gst_enabled and is_india
         if show_tax and intra:
-            headers = ["S.No", "Product", "HSN", "Qty", "Unit Price", "Taxable Value",
+            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
                        f"CGST ({settings.gst_cgst_percent}%)", f"SGST ({settings.gst_sgst_percent}%)", "Total (Incl. GST)"]
             widths = [0.05, 0.29, 0.07, 0.05, 0.11, 0.13, 0.10, 0.10, 0.10]
         elif show_tax:
-            headers = ["S.No", "Product", "HSN", "Qty", "Unit Price", "Taxable Value",
+            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
                        f"IGST ({self._fmt_rate(settings.gst_total_percent)}%)", "Total (Incl. GST)"]
             widths = [0.05, 0.34, 0.08, 0.05, 0.12, 0.14, 0.10, 0.12]
         else:
-            headers = ["S.No", "Product", "Qty", "Unit Price", "Total"]
+            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", f"Total ({currency_code})"]
             widths = [0.06, 0.52, 0.08, 0.16, 0.18]
         widths = [w * (page_w - 2 * margin) for w in widths]
 
@@ -523,38 +555,41 @@ class InvoiceService:
             c.drawRightString(page_w - margin, yy, value)
             return yy - 5 * mm
 
-        y = total_line("Subtotal:", f"Rs. {subtotal:.2f}", y)
+        y = total_line("Subtotal:", fmt_money(subtotal), y)
         if discount:
             label = "Discount:"
             snap = order_doc.get("applied_discount") or {}
             code = snap.get("code") if isinstance(snap, dict) else getattr(snap, "code", None)
             if code:
                 label = f"Discount ({code}):"
-            y = total_line(label, f"- Rs. {discount:.2f}", y)
+            y = total_line(label, f"- {fmt_money(discount)}", y)
         if shipping:
-            y = total_line("Shipping:", f"Rs. {shipping:.2f}", y)
-        y = total_line("GRAND TOTAL:", f"Rs. {grand_total:.2f}", y, bold=True)
+            y = total_line("Shipping:", fmt_money(shipping), y)
+        y = total_line("GRAND TOTAL:", fmt_money(grand_total), y, bold=True)
         if show_tax:
             y -= 2 * mm
             c.setFont("Helvetica", 7.5)
             c.setFillColor(muted)
             c.drawRightString(page_w - margin, y, "GST breakup (included in prices)")
             y -= 4.5 * mm
-            y = total_line("Taxable Value:", f"Rs. {taxable_total:.2f}", y)
+            y = total_line("Taxable Value:", fmt_money(taxable_total), y)
             if intra:
-                y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", f"Rs. {cgst_total:.2f}", y)
-                y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", f"Rs. {sgst_total:.2f}", y)
+                y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", fmt_money(cgst_total), y)
+                y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", fmt_money(sgst_total), y)
             else:
                 y = total_line(
                     f"IGST @ {self._fmt_rate(settings.gst_total_percent)}%:",
-                    f"Rs. {igst_total:.2f}",
+                    fmt_money(igst_total),
                     y,
                 )
         y -= 1 * mm
 
         c.setFont("Helvetica-Oblique", 8)
         c.setFillColor(muted)
-        c.drawString(margin, y, f"Amount in words: {amount_in_words_inr(grand_total)}")
+        if currency_code == "INR":
+            c.drawString(margin, y, f"Amount in words: {amount_in_words_inr(grand_total)}")
+        else:
+            c.drawString(margin, y, f"Amount charged: {fmt_money(grand_total)} {currency_code}")
         y -= 8 * mm
 
         # -- Receipt payment block / tax declaration
@@ -572,9 +607,9 @@ class InvoiceService:
             if order_doc.get("razorpay_payment_id"):
                 c.drawString(margin, y, f"Razorpay Payment ID: {order_doc['razorpay_payment_id']}")
                 y -= 4 * mm
-            c.drawString(margin, y, f"Amount Received: Rs. {grand_total:.2f}" if paid else "Amount Due on Delivery")
+            c.drawString(margin, y, f"Amount Received: {fmt_money(grand_total)}" if paid else "Amount Due on Delivery")
             y -= 8 * mm
-        else:
+        elif is_india:
             c.setFont("Helvetica", 8)
             c.setFillColor(muted)
             c.drawString(margin, y, "Whether tax is payable under reverse charge — No")

@@ -20,6 +20,7 @@ os.environ.setdefault("RAZORPAY_KEY_SECRET", "secret")
 
 from src.models.coupon import Coupon, DiscountIndicator, DiscountType
 from src.models.order import OrderCreateInput, RegionAudit
+from src.models.product import MarketPrice
 from src.services.discount_service import CouponService, compute_discount
 from src.services.order_service import OrderService
 
@@ -514,3 +515,127 @@ class TestRegionCheckoutPolicy:
         with order_pipeline_mocks():
             with pytest.raises(ValueError, match="only ship within India"):
                 await OrderService().initiate_order(order_data)
+
+
+class TestOrderCurrencyPersistence:
+    """The real bug this class guards against: an Australian customer's
+    order total showed up with a rupee symbol on the Thank You page,
+    because the currency actually charged was never stored on the order at
+    all — everything downstream just assumed INR. Each order must persist
+    the currency its items were actually resolved against, not the pricing
+    region or a hardcoded default."""
+
+    @pytest.mark.asyncio
+    async def test_cod_order_from_australia_persists_the_products_resolved_currency(self):
+        product = _catalog_product()
+        product.prices = [
+            MarketPrice(country="default", sym="$", currency="USD", mrp=30, sellingPrice=25)
+        ]
+        au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
+        order_data = OrderCreateInput(**_order_payload(paymentMethod="cod"))
+
+        with order_pipeline_mocks(product=product, region_audit=au_region):
+            order = await OrderService().create(order_data)
+
+        assert order.currency == "USD"
+        assert order.currency_symbol == "$"
+        assert order.items[0].currency == "USD"
+        assert order.items[0].sym == "$"
+
+    @pytest.mark.asyncio
+    async def test_cod_order_from_india_persists_inr(self):
+        order_data = OrderCreateInput(**_order_payload(paymentMethod="cod"))
+
+        with order_pipeline_mocks():
+            order = await OrderService().create(order_data)
+
+        assert order.currency == "INR"
+        assert order.currency_symbol == "₹"
+
+    @pytest.mark.asyncio
+    async def test_admin_manual_order_always_persists_inr(self):
+        product = _catalog_product()
+        with order_pipeline_mocks(product=product):
+            order = await OrderService().create_from_admin({
+                "user_email": "x@test.com",
+                "shipping_address": {
+                    "full_name": "X", "phone": "9999999999",
+                    "address_line1": "a", "city": "c",
+                    "state": "s", "postal_code": "1", "country": "India",
+                },
+                "items": [{"product_id": "p1", "quantity": 1}],
+            })
+
+        assert order.currency == "INR"
+        assert order.currency_symbol == "₹"
+
+
+class TestInvoiceGstCountryGating:
+    """CGST/SGST/IGST is a domestic-supply tax — an order that ships outside
+    India is an export, which isn't set up to charge Indian GST. A "Tax
+    Invoice" document (and any GST split on a "receipt") must never be
+    produced for one of those orders, regardless of what doc_type an admin
+    requests."""
+
+    def _order_doc(self, *, country: str, currency: str = "INR", sym: str = "₹"):
+        return {
+            "order_id": "o1",
+            "shipping_address": {
+                "full_name": "X", "phone": "1", "address_line1": "a",
+                "city": "c", "state": "Victoria", "postal_code": "1",
+                "country": country,
+            },
+            "items": [
+                {"product_id": "p1", "product_name": "Ring", "quantity": 1, "unit_price": 25.0, "total_price": 25.0}
+            ],
+            "subtotal": 25.0,
+            "discount": 0,
+            "shipping": 0,
+            "total_amount": 25.0,
+            "currency": currency,
+            "currency_symbol": sym,
+            "payment_method": "cod",
+            "payment_status": "pending",
+            "created_at": None,
+        }
+
+    def test_is_india_order_true_for_india_address(self):
+        from src.services.invoice_service import InvoiceService
+
+        assert InvoiceService().is_india_order(self._order_doc(country="India")) is True
+
+    def test_is_india_order_false_for_australia_address(self):
+        from src.services.invoice_service import InvoiceService
+
+        assert InvoiceService().is_india_order(self._order_doc(country="Australia")) is False
+
+    def test_tax_invoice_raises_for_non_india_order(self):
+        from src.services.invoice_service import InvoiceService
+
+        service = InvoiceService()
+        with pytest.raises(ValueError, match="only issued for orders shipping within India"):
+            service.build_pdf(
+                self._order_doc(country="Australia", currency="USD", sym="$"),
+                doc_type="tax_invoice",
+                invoice_number="INV-2026-000001",
+                invoice_date=__import__("datetime").datetime.utcnow(),
+            )
+
+    def test_bill_of_supply_renders_in_the_orders_actual_currency_for_non_india_order(self):
+        from src.services.invoice_service import InvoiceService
+
+        service = InvoiceService()
+        pdf_bytes = service.build_pdf(
+            self._order_doc(country="Australia", currency="USD", sym="$"),
+            doc_type="bill_of_supply",
+            invoice_number="INV-2026-000002",
+            invoice_date=__import__("datetime").datetime.utcnow(),
+        )
+        assert pdf_bytes[:4] == b"%PDF"
+
+    def test_tax_lines_split_no_tax_for_non_india_order_even_on_receipt(self):
+        from src.services.invoice_service import InvoiceService
+
+        service = InvoiceService()
+        rows = service._tax_lines(self._order_doc(country="Australia", currency="USD", sym="$"), "receipt")
+        assert all(r["cgst"] == 0 and r["sgst"] == 0 and r["igst"] == 0 for r in rows)

@@ -34,6 +34,7 @@ from src.services.user_service import UserService
 from src.pricing.geo_provider import GeoIPDiscoveryAdapter
 from src.pricing.resolvers import resolve_country
 from src.pricing.price_lookup import resolve_price
+from src.utils.region import is_india_address as _is_india_address
 
 # Shared breaker state (lives in Redis — see circuit_breaker.py) for every
 # outbound Razorpay call made from this service.
@@ -48,15 +49,6 @@ except ImportError:
     EVENT_ORDER_CREATED = "order.created"
     publish_alert = None
 
-
-_INDIA_ADDRESS_NAMES = {"india", "in", "bharat"}
-
-
-def _is_india_address(shipping_country: Optional[str]) -> bool:
-    """The shipping address's free-text country field (not the pricing
-    region) — Shiprocket only ships within India today, so this is checked
-    independently of which market a customer priced/paid in."""
-    return (shipping_country or "").strip().lower() in _INDIA_ADDRESS_NAMES
 
 
 def _order_alert_payload(order_dict: dict) -> dict:
@@ -98,12 +90,37 @@ class OrderService:
         await logs_collection.create_index("order_id", unique=True)
         await order_ledger.ensure_indexes()
 
+    # region -> currency actually used before `currency`/`currency_symbol`
+    # were persisted on the order document (mirrors the storefront's
+    # REGION_CURRENCY map at src/lib/regionCurrency.ts) — used only as a
+    # best-effort fallback for orders written before that migration, never
+    # for anything created going forward (those always carry the real,
+    # resolved currency straight from the priced items).
+    _LEGACY_CURRENCY_BY_COUNTRY = {
+        "IN": ("INR", "₹"),
+        "AU": ("AUD", "$"),
+        "NZ": ("NZD", "$"),
+        "default": ("USD", "$"),
+    }
+
     def _order_from_doc(self, order_doc: dict) -> Order:
+        """Single place every raw Mongo order document is turned into an
+        `Order` — converts the embedded shipping address DTO and, for
+        orders predating the `currency` field, infers it from the region
+        that was actually used to price it rather than defaulting to INR
+        (which previously made a real AU order's confirmation page and
+        invoice show a rupee symbol on a non-Indian total)."""
+        order_doc = {**order_doc}
         if isinstance(order_doc.get("shipping_address"), dict):
-            order_doc = {**order_doc}
             order_doc["shipping_address"] = ShippingAddressInOrder(
                 **order_doc["shipping_address"]
             )
+        if not order_doc.get("currency"):
+            region_audit = order_doc.get("region_audit") or {}
+            country = region_audit.get("pricing_country_used") or "IN"
+            currency, sym = self._LEGACY_CURRENCY_BY_COUNTRY.get(country, ("INR", "₹"))
+            order_doc["currency"] = currency
+            order_doc["currency_symbol"] = sym
         return Order(**order_doc)
 
     async def _clear_pending_redis(self, order_id: str) -> None:
@@ -567,6 +584,11 @@ class OrderService:
             "discount": pricing.discount,
             "shipping": pricing.shipping,
             "total_amount": pricing.total,
+            # Every validated item was priced against the same resolved
+            # country, so they all share one currency — take it from the
+            # first item (guaranteed non-empty, see min-items validation).
+            "currency": validated_items[0].currency,
+            "currency_symbol": validated_items[0].sym,
             "payment_method": order_data.paymentMethod or "cod",
             # COD cash hasn't actually been collected yet at order time — admin
             # must explicitly mark it collected via mark_payment_collected().
@@ -620,9 +642,7 @@ class OrderService:
             payment_method=order_dict["payment_method"],
             source="checkout",
         )
-        # Convert shipping_address dict to DTO when creating Order
-        order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-        return Order(**order_dict)
+        return self._order_from_doc(order_dict)
 
     async def create_from_admin(
         self,
@@ -750,6 +770,10 @@ class OrderService:
             "discount": discount,
             "shipping": shipping,
             "total_amount": total_amount,
+            # Admin manual orders use price_inr directly (see admin_order_country
+            # below) — always India, always INR.
+            "currency": "INR",
+            "currency_symbol": "₹",
             "payment_method": payment_method,
             "payment_status": payment_status,
             "status": status.model_dump(),
@@ -803,9 +827,8 @@ class OrderService:
             payment_method=payment_method,
             source="admin_dashboard",
         )
-        order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-        return Order(**order_dict)
-    
+        return self._order_from_doc(order_dict)
+
     async def get_by_id(self, order_id: str) -> Optional[Order]:
         """Get order by order_id (not MongoDB _id)"""
         database = await db.get_database()
@@ -814,9 +837,7 @@ class OrderService:
         order_dict = await collection.find_one({"order_id": order_id})
         if order_dict:
             # Convert shipping_address dict to DTO
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            return Order(**order_dict)
+            return self._order_from_doc(order_dict)
         return None
     
     async def get_by_mongo_id(self, mongo_id: str) -> Optional[Order]:
@@ -827,9 +848,7 @@ class OrderService:
         order_dict = await collection.find_one({"_id": ObjectId(mongo_id)})
         if order_dict:
             # Convert shipping_address dict to DTO
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            return Order(**order_dict)
+            return self._order_from_doc(order_dict)
         return None
     
     async def list(
@@ -857,9 +876,7 @@ class OrderService:
 
         orders = []
         for order_dict in orders_dict:
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            orders.append(Order(**order_dict))
+            orders.append(self._order_from_doc(order_dict))
 
         return orders
 
@@ -886,9 +903,7 @@ class OrderService:
 
         orders = []
         for order_dict in orders_dict:
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            orders.append(Order(**order_dict))
+            orders.append(self._order_from_doc(order_dict))
         return orders
 
     async def list_by_phone(self, phone: str, limit: int = 50) -> List[Order]:
@@ -934,9 +949,7 @@ class OrderService:
 
         orders = []
         for order_dict in orders_dict:
-            if isinstance(order_dict.get("shipping_address"), dict):
-                order_dict["shipping_address"] = ShippingAddressInOrder(**order_dict["shipping_address"])
-            orders.append(Order(**order_dict))
+            orders.append(self._order_from_doc(order_dict))
         return orders
 
     async def count(
@@ -1211,11 +1224,19 @@ class OrderService:
             market_price = resolve_price(product.prices, country) if product.prices else None
             unit_price = money(market_price.sellingPrice) if market_price else money(product.price_inr)
             total_price = money(unit_price * item.quantity)
+            # Legacy products with no `prices` array at all are still priced
+            # off `price_inr` directly (always INR) — everything else carries
+            # whichever currency its resolved MarketPrice bucket declares,
+            # "default" included (see scripts/migrate_market_prices.py).
+            item_currency = market_price.currency if market_price else "INR"
+            item_sym = market_price.sym if market_price else "₹"
 
             validated_items.append(ValidatedOrderItem(
                 product_id=str(product.id),
                 product_name=product.name,
                 variant=variant,
+                currency=item_currency,
+                sym=item_sym,
                 quantity=item.quantity,
                 unit_price=unit_price,
                 total_price=total_price,
@@ -1304,6 +1325,8 @@ class OrderService:
             "discount": pricing.discount,
             "shipping": pricing.shipping,
             "total_amount": pricing.total,
+            "currency": validated_items[0].currency,
+            "currency_symbol": validated_items[0].sym,
             "payment_method": "razorpay",
             "payment_status": "pending",
             "status": OrderStatus(type="accepted").model_dump(),
