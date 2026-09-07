@@ -1173,17 +1173,20 @@ class OrderService:
                     "Online prepaid payment isn't available in your region yet — "
                     "please choose Cash on Delivery, or switch to India to pay online."
                 )
-
-        # Fulfillment (Shiprocket) only ships within India today — see
-        # src/shipping/courier_provider.py. A customer can legitimately
-        # browse in AUD/NZD and still pay COD (that's now allowed from any
-        # region), but the parcel itself can only go to an Indian address,
-        # so this is checked regardless of pricing region or payment
-        # method — it's a physical constraint, not a market-availability one.
-        if not _is_india_address(order_data.shippingAddress.country):
-            raise ValueError(
-                "We can only ship within India right now — please use an Indian shipping address."
-            )
+            # Automated fulfillment (Shiprocket) only ships within India today
+            # (see src/shipping/courier_provider.py), and an online-paid order
+            # has no manual-collection fallback the way COD does, so a
+            # non-Indian shipping address paired with prepaid checkout is
+            # rejected here.
+            if not _is_india_address(order_data.shippingAddress.country):
+                raise ValueError(
+                    "We can only ship within India right now — please use an Indian shipping address."
+                )
+        # COD orders outside India are allowed through deliberately: Shiprocket
+        # fulfillment stays India-only (CourierProvider resolves to
+        # UnavailableCourierProvider for any other market, see
+        # ShiprocketPanel's manual-handling banner), but the order itself
+        # isn't blocked — admins fulfil/deliver those manually.
 
         min_qty = settings.order_min_quantity
         max_qty = settings.order_max_quantity
