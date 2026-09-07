@@ -161,6 +161,7 @@ from api.routes import (
     coupons,
     cqrs,
     cron,
+    geo,
     health,
     media,
     orders,
@@ -171,6 +172,7 @@ from api.routes import (
 app.include_router(health.router)
 app.include_router(storefront.router)
 app.include_router(pincode.router)
+app.include_router(geo.router)
 app.include_router(contact.router)
 app.include_router(orders.router)
 app.include_router(coupons.router)

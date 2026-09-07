@@ -1,0 +1,3 @@
+*.mmdb
+*.mmdb.gz
+geoip-server

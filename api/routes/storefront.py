@@ -1,24 +1,60 @@
 """Public, read-only storefront content endpoints (no auth)."""
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 import json
-from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, settings
+from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, GeoIPDiscoveryAdapter, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, get_client_ip, settings
 from api.json_utils import JSONEncoder, _json_dumps, _json_response_content
+from src.models.product import MarketPrice
+from src.pricing.price_lookup import resolve_price
+from src.pricing.resolvers import resolve_country
 from src.services.product_filters import parse_ids_query
 
 router = APIRouter()
 
+SELECTED_COUNTRY_HEADER = "x-selected-country"
 
-async def _cache_products_key(category, search, sort, skip, limit, is_best_seller=None, is_curated=None, ids=None):
+
+async def _effective_country(request: Request) -> str:
+    """Resolve the pricing country for this request: explicit selection
+    (header, set by the frontend from its Zustand store) first, GeoIP on
+    the request's IP second, "default" as the terminal fallback."""
+    selected = request.headers.get(SELECTED_COUNTRY_HEADER) or request.query_params.get("country")
+    ip_country = None
+    if get_client_ip and GeoIPDiscoveryAdapter:
+        ip = get_client_ip(request)
+        geo = await GeoIPDiscoveryAdapter().lookup(ip)
+        ip_country = geo.country
+    return resolve_country(selected_country=selected, ip_country=ip_country)
+
+
+def _apply_market_pricing(product: dict, country: str) -> dict:
+    """Attach the region-resolved price onto a product response, in place —
+    the frontend keeps reading `price_inr`/new `currency`/`sym`/`mrp` fields
+    as one already-resolved price, same as before multi-region existed."""
+    raw_prices = product.get("prices") or []
+    if not raw_prices:
+        return product
+    prices = [MarketPrice(**p) for p in raw_prices]
+    match = resolve_price(prices, country)
+    product["price_inr"] = match.sellingPrice
+    product["mrp"] = match.mrp
+    product["currency"] = match.currency
+    product["sym"] = match.sym
+    product["pricing_country"] = match.country
+    return product
+
+
+async def _cache_products_key(category, search, sort, skip, limit, is_best_seller=None, is_curated=None, ids=None, country=None):
     return (
         f"chokmoki:products:{category or 'all'}:{search or 'all'}:{sort or 'default'}"
-        f":bs{is_best_seller}:cur{is_curated}:{skip}:{limit}:ids{ids or 'all'}"
+        f":bs{is_best_seller}:cur{is_curated}:{skip}:{limit}:ids{ids or 'all'}:c{country or 'default'}"
     )
 
 
 @router.get("/api/products")
 async def api_list_products(
+    request: Request,
     category: Optional[str] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
@@ -35,15 +71,18 @@ async def api_list_products(
     id_list = parse_ids_query(ids)
     if id_list:
         limit = max(limit, len(id_list))
-    
+
+    country = await _effective_country(request)
+
     cache_key = await _cache_products_key(
-        category, search, sort, skip, limit, is_best_seller, is_curated, ",".join(id_list) if id_list else None
+        category, search, sort, skip, limit, is_best_seller, is_curated, ",".join(id_list) if id_list else None,
+        country,
     )
     if cache:
         cached = await cache.get(cache_key)
         if cached:
             return JSONResponse(content=json.loads(cached))
-    
+
     service = ProductService()
     products = await service.list(
         skip=skip, limit=limit, active=True,
@@ -51,43 +90,46 @@ async def api_list_products(
         is_best_seller=is_best_seller, is_curated=is_curated,
         ids=id_list,
     )
+    products = [_apply_market_pricing(p, country) for p in products]
     total = await service.count(
         active=True, category=category, search=search,
         is_best_seller=is_best_seller, is_curated=is_curated,
         ids=id_list,
     )
     result = {"data": products, "count": total}
-    
+
     if cache:
         await cache.set(cache_key, _json_dumps(result), 300)
-    
+
     return JSONResponse(content=_json_response_content(result))
 
 
 @router.get("/api/products/{slug}")
-async def api_get_product(slug: str):
+async def api_get_product(slug: str, request: Request):
     """Get a single product by slug"""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
-    
-    cache_key = f"chokmoki:product:{slug}"
+
+    country = await _effective_country(request)
+    cache_key = f"chokmoki:product:{slug}:c{country}"
     if cache:
         cached = await cache.get(cache_key)
         if cached:
             return JSONResponse(content=json.loads(cached))
-    
+
     service = ProductService()
     product = await service.get_by_slug(slug)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    
+
     result = json.loads(json.dumps(
         product.model_dump(by_alias=True),
         cls=JSONEncoder
     ))
+    result = _apply_market_pricing(result, country)
     if cache:
         await cache.set(cache_key, _json_dumps(result), 300)
-    
+
     return JSONResponse(content=result)
 
 

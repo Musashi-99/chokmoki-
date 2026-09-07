@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import core_schema
 from bson import ObjectId
 from datetime import datetime
@@ -43,11 +43,51 @@ class ProductVariant(BaseModel):
     variant_values: List[VariantValue]
 
 
+class MarketPrice(BaseModel):
+    """One country's price for a product. "default" is the required
+    fallback bucket used for every country outside the configured
+    markets (see settings.supported_market_countries)."""
+    country: str          # "IN" | "AU" | "NZ" | "default"
+    sym: str              # display symbol, e.g. "₹" / "$"
+    currency: str         # ISO 4217, e.g. "INR" / "AUD" / "NZD" / "USD"
+    mrp: float
+    sellingPrice: float
+
+    @field_validator("mrp", "sellingPrice")
+    @classmethod
+    def _positive(cls, v):
+        from src.utils.money import money
+        n = money(v)
+        if n <= 0:
+            raise ValueError("Price must be greater than zero")
+        return n
+
+    @field_validator("country")
+    @classmethod
+    def _upper_country(cls, v):
+        v = (v or "").strip()
+        return v if v == "default" else v.upper()
+
+
+def _validate_market_prices(prices: List["MarketPrice"]) -> List["MarketPrice"]:
+    if not prices:
+        return prices
+    seen = set()
+    for p in prices:
+        if p.country in seen:
+            raise ValueError(f"Duplicate price entry for country '{p.country}'")
+        seen.add(p.country)
+    if "default" not in seen:
+        raise ValueError("prices must include a 'default' fallback entry")
+    return prices
+
+
 class JewelryProduct(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     slug: str
     name: str
     price_inr: float
+    prices: List[MarketPrice] = Field(default_factory=list)
     category: str
     collection: str
     thumbnail: str
@@ -86,7 +126,24 @@ class JewelryProduct(BaseModel):
         if n <= 0:
             raise ValueError("Price must be greater than zero")
         return n
-    
+
+    @field_validator("prices")
+    @classmethod
+    def _validate_prices(cls, v):
+        return _validate_market_prices(v)
+
+    @model_validator(mode="after")
+    def _sync_legacy_inr(self):
+        # price_inr stays the source of truth for legacy paths (admin manual
+        # orders, price sort) — keep it mirrored to the "IN" market bucket
+        # whenever multi-region pricing is configured, so there is exactly
+        # one number an editor has to keep correct.
+        for p in self.prices:
+            if p.country == "IN":
+                self.price_inr = p.sellingPrice
+                break
+        return self
+
     model_config = {
         "populate_by_name": True,
         "arbitrary_types_allowed": True,
@@ -98,6 +155,7 @@ class JewelryProductCreate(BaseModel):
     slug: str
     name: str
     price_inr: float
+    prices: List[MarketPrice] = Field(default_factory=list)
     category: str
     collection: str
     thumbnail: str
@@ -133,6 +191,19 @@ class JewelryProductCreate(BaseModel):
             raise ValueError("Price must be greater than zero")
         return n
 
+    @field_validator("prices")
+    @classmethod
+    def _validate_prices(cls, v):
+        return _validate_market_prices(v)
+
+    @model_validator(mode="after")
+    def _sync_legacy_inr(self):
+        for p in self.prices:
+            if p.country == "IN":
+                self.price_inr = p.sellingPrice
+                break
+        return self
+
 
 from src.security.mass_assignment import StrictUpdateModel
 
@@ -141,6 +212,7 @@ class JewelryProductUpdate(StrictUpdateModel):
     slug: Optional[str] = None
     name: Optional[str] = None
     price_inr: Optional[float] = None
+    prices: Optional[List[MarketPrice]] = None
     category: Optional[str] = None
     collection: Optional[str] = None
     thumbnail: Optional[str] = None
@@ -177,6 +249,22 @@ class JewelryProductUpdate(StrictUpdateModel):
         if n <= 0:
             raise ValueError("Price must be greater than zero")
         return n
+
+    @field_validator("prices")
+    @classmethod
+    def _validate_prices(cls, v):
+        if v is None:
+            return v
+        return _validate_market_prices(v)
+
+    @model_validator(mode="after")
+    def _sync_legacy_inr(self):
+        if self.prices:
+            for p in self.prices:
+                if p.country == "IN":
+                    self.price_inr = p.sellingPrice
+                    break
+        return self
 
 
 class Product(BaseModel):

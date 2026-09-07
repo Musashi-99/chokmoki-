@@ -330,6 +330,29 @@ class Settings(BaseSettings):
     )
     fraud_velocity_ip_threshold: int = Field(default=10, env="FRAUD_VELOCITY_IP_THRESHOLD")
 
+    # Multi-region pricing / GeoIP
+    geoip_service_url: Optional[str] = Field(default=None, env="GEOIP_SERVICE_URL")
+    geoip_lookup_timeout_seconds: float = Field(
+        default=3.0, env="GEOIP_LOOKUP_TIMEOUT_SECONDS"
+    )
+    # How long an IP -> country lookup is cached in Redis. Keeps repeated
+    # requests from the same visitor (page loads, product fetches) from
+    # hammering the geoip-discovery service — one lookup per IP per window.
+    geoip_cache_ttl_seconds: int = Field(
+        default=14400, env="GEOIP_CACHE_TTL_SECONDS"  # 4 hours
+    )
+    supported_market_countries: str = Field(
+        default="IN,AU,NZ", env="SUPPORTED_MARKET_COUNTRIES"
+    )
+    # Markets that can actually complete checkout today (payment gateway +
+    # fulfillment both work). AU/NZ/default are priceable and browsable
+    # (supported_market_countries) but have no working payment processor
+    # yet, so orders from those markets are rejected with a clear message
+    # until a gateway is wired up for them — see order_service.py.
+    checkout_enabled_countries: str = Field(
+        default="IN", env="CHECKOUT_ENABLED_COUNTRIES"
+    )
+
     # Idempotency
     idempotency_enabled: bool = Field(default=True, env="IDEMPOTENCY_ENABLED")
     idempotency_ttl_seconds: int = Field(default=86400, env="IDEMPOTENCY_TTL_SECONDS")

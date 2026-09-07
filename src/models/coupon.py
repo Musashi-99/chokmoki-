@@ -50,6 +50,9 @@ class Coupon(BaseModel):
     amount: float
     indicator: DiscountIndicator
     product_ids: Optional[List[str]] = None
+    # Countries this coupon is valid in ("IN"/"AU"/"NZ"/"default"). None or
+    # empty = valid everywhere (preserves old coupons' behavior unchanged).
+    countries: Optional[List[str]] = None
     active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -79,6 +82,7 @@ class CouponCreate(BaseModel):
     amount: float
     indicator: DiscountIndicator
     product_ids: Optional[List[str]] = None
+    countries: Optional[List[str]] = None
     active: bool = True
 
     @model_validator(mode="before")
@@ -92,6 +96,19 @@ class CouponCreate(BaseModel):
         if isinstance(v, str):
             return v.strip().upper()
         return v
+
+    @field_validator("countries")
+    @classmethod
+    def normalize_countries(cls, v):
+        if not v:
+            return None
+        out = []
+        for c in v:
+            c = (c or "").strip()
+            if not c:
+                continue
+            out.append(c if c.lower() == "default" else c.upper())
+        return out or None
 
     @model_validator(mode="after")
     def validate_amount_and_scope(self):
@@ -124,6 +141,7 @@ class CouponUpdate(StrictUpdateModel):
     amount: Optional[float] = None
     indicator: Optional[DiscountIndicator] = None
     product_ids: Optional[List[str]] = None
+    countries: Optional[List[str]] = None
     active: Optional[bool] = None
 
     @model_validator(mode="before")
@@ -137,6 +155,19 @@ class CouponUpdate(StrictUpdateModel):
         if isinstance(v, str):
             return v.strip().upper()
         return v
+
+    @field_validator("countries")
+    @classmethod
+    def normalize_countries(cls, v):
+        if not v:
+            return v
+        out = []
+        for c in v:
+            c = (c or "").strip()
+            if not c:
+                continue
+            out.append(c if c.lower() == "default" else c.upper())
+        return out or None
 
     @model_validator(mode="after")
     def validate_amount(self):
@@ -158,3 +189,4 @@ class CouponPreviewItem(BaseModel):
 class CouponPreviewInput(BaseModel):
     code: str
     items: List[CouponPreviewItem] = Field(..., min_length=1, max_length=50)
+    country: Optional[str] = None
