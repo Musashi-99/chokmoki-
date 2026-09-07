@@ -832,6 +832,7 @@ class OrderService:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
+        country: Optional[str] = None,
         sort_order: int = -1,
     ) -> List[Order]:
         """List orders with optional filtering, search, and date range"""
@@ -839,7 +840,7 @@ class OrderService:
         collection = database[self.COLLECTION_NAME]
 
         query = self._build_order_query(
-            user_email, status, search, from_date, to_date, coupon
+            user_email, status, search, from_date, to_date, coupon, country
         )
         cursor = collection.find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         orders_dict = await cursor.to_list(length=limit)
@@ -936,13 +937,14 @@ class OrderService:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> int:
         """Count orders matching the given filters"""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
         query = self._build_order_query(
-            user_email, status, search, from_date, to_date, coupon
+            user_email, status, search, from_date, to_date, coupon, country
         )
         return await collection.count_documents(query)
 
@@ -968,6 +970,7 @@ class OrderService:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> dict:
         query: dict = {}
         if user_email is not None:
@@ -982,6 +985,8 @@ class OrderService:
             to_date = coerce_safe_string(to_date, "to_date")
         if coupon is not None:
             coupon = coerce_safe_string(coupon, "coupon")
+        if country is not None:
+            country = coerce_safe_string(country, "country")
 
         if user_email:
             query["user_email"] = user_email
@@ -989,6 +994,11 @@ class OrderService:
             query["status.type"] = status
         if coupon:
             query["applied_discount.code"] = coupon.upper()
+        if country:
+            # The region actually used to price the order — not the raw
+            # selected/GeoIP fields, which can legitimately disagree with it
+            # (that disagreement is its own signal, see country_mismatch).
+            query["region_audit.pricing_country_used"] = country.strip().upper() if country.strip().lower() != "default" else "default"
         if search:
             safe = escape_mongo_regex(search)
             query["$or"] = [
