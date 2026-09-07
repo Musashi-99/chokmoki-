@@ -51,14 +51,27 @@ services:
     # source IP is always private, so this always answers "default" for
     # local dev — use the storefront's country selector (explicit choice)
     # to test AU/NZ pricing locally instead of relying on GeoIP.
+    #
+    # Deliberately NOT published to the host (no `ports:`) and not proxied
+    # by nginx — this is an internal-only service. The one and only
+    # client-facing surface for GeoIP is the backend's own
+    # GET /api/geo/detect (api/routes/geo.py), which calls this over the
+    # compose network at http://geoip:8080. That's what carries the real
+    # client IP: nginx sets X-Real-IP on every request to the backend
+    # (deploy/nginx-chokmoki.conf), the backend resolves it via
+    # extract_client_ip() (src/security/client_ip.py, TRUSTED_PROXY_ENABLED),
+    # then hands that IP to GeoIPDiscoveryAdapter — never the browser
+    # talking to this container directly.
+    #
+    # To debug it directly during local dev: `docker compose exec backend
+    # curl http://geoip:8080/health` (or `/lookup?ip=8.8.8.8`) — no host
+    # port needed.
     build:
       context: ./geoip-discovery
     container_name: chokmoki-geoip
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
-    ports:
-      - "${GEOIP_HOST_PORT:-8081}:8080"
     volumes:
       - geoip_data:/data
     command: ["-addr", ":8080", "-cache-mb", "200"]
