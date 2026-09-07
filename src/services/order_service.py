@@ -8,7 +8,7 @@ import json
 import razorpay.errors
 from src.database.connection import db
 from src.database.redis_connection import redis_client
-from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder
+from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder, RegionAudit
 from src.models.common import PricingDTO
 from src.models.coupon import AppliedDiscount
 from src.models.dto import OrderInitiateResponseDTO, OrderLogDTO
@@ -31,6 +31,9 @@ from src.utils.regex_safe import escape_mongo_regex
 from src.utils.money import money
 from src.security.mongo_safe import coerce_safe_string
 from src.services.user_service import UserService
+from src.pricing.geo_provider import GeoIPDiscoveryAdapter
+from src.pricing.resolvers import resolve_country
+from src.pricing.price_lookup import resolve_price
 
 # Shared breaker state (lives in Redis — see circuit_breaker.py) for every
 # outbound Razorpay call made from this service.
@@ -494,12 +497,15 @@ class OrderService:
         order_data: OrderCreateInput,
         ip: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> Order:
         """Create order with validation and recalculation (for COD)"""
         if order_data.paymentMethod == "razorpay":
             raise ValueError("Use initiate_order for razorpay payments")
 
-        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied, region_audit = await self._validate_and_prepare_order(
+            order_data, ip=ip, user_agent=user_agent
+        )
 
         fraud_ctx = FraudContext(
             event_type="order_create",
@@ -508,7 +514,17 @@ class OrderService:
             phone=order_data.shippingAddress.phone,
             endpoint="/api/orders",
             ip=ip,
+            user_agent=user_agent,
+            attributes={
+                "selected_country": region_audit.selected_country,
+                "ip_country": region_audit.ip_country,
+                "country_mismatch": region_audit.country_mismatch,
+            },
         )
+        # Country mismatch is signal, never a blocker on its own — the fraud
+        # rule for it (region_country_mismatch) is configured manual_review,
+        # not reject. Only genuinely high-risk rules (velocity, tor, etc.)
+        # can still REJECT here.
         decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
         if decision.action == FraudAction.REJECT:
             raise ValueError("Order rejected")
@@ -547,7 +563,8 @@ class OrderService:
             "payment_status": "pending",
             "status": OrderStatus(type="accepted").model_dump(),
             "created_at": datetime.utcnow(),
-            "raw_order_log": raw_order_log
+            "raw_order_log": raw_order_log,
+            "region_audit": region_audit.model_dump(),
         }
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
@@ -1079,11 +1096,51 @@ class OrderService:
         return await order_ledger.get_events(order_id)
 
 
-    async def _validate_and_prepare_order(self, order_data: OrderCreateInput) -> tuple[List[ValidatedOrderItem], PricingDTO, Optional[AppliedDiscount]]:
+    async def _resolve_region(
+        self, order_data: OrderCreateInput, ip: Optional[str], user_agent: Optional[str]
+    ) -> RegionAudit:
+        """Single place that computes the GeoIP lookup + effective pricing
+        country + full evidence trail — called once per order so the same
+        lookup feeds both pricing and the fraud enrichment step below."""
+        geo = await GeoIPDiscoveryAdapter().lookup(ip or "")
+        selected = (order_data.selectedCountry or "").strip().upper() or None
+        effective_country = resolve_country(selected_country=selected, ip_country=geo.country)
+        return RegionAudit(
+            ip=ip,
+            ip_country=geo.country,
+            ip_country_raw=geo.raw_country,
+            selected_country=selected,
+            pricing_country_used=effective_country,
+            country_mismatch=bool(selected and geo.country and selected != geo.country and geo.country != "default"),
+            user_agent=user_agent,
+            geoip_raw_response=geo.raw,
+        )
+
+    async def _validate_and_prepare_order(
+        self,
+        order_data: OrderCreateInput,
+        ip: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> tuple[List[ValidatedOrderItem], PricingDTO, Optional[AppliedDiscount], RegionAudit]:
         """Validate order items and recalculate pricing - shared logic"""
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
-        
+
+        region_audit = await self._resolve_region(order_data, ip, user_agent)
+        country = region_audit.pricing_country_used
+
+        checkout_enabled = {
+            c.strip().upper() for c in (settings.checkout_enabled_countries or "").split(",") if c.strip()
+        }
+        if country not in checkout_enabled:
+            # Browsing/pricing is multi-region already; checkout isn't yet —
+            # AU/NZ/default have no working payment gateway wired up. Reject
+            # early, before inventory/fraud work, with a message the
+            # storefront can show as-is.
+            raise ValueError(
+                "Orders aren't available in your region yet — please switch to India to check out."
+            )
+
         min_qty = settings.order_min_quantity
         max_qty = settings.order_max_quantity
 
@@ -1103,10 +1160,11 @@ class OrderService:
                 variant = {"default": "default"}
             if not self._validate_variant(product, variant):
                 raise ValueError(f"Invalid variant {item.variant} for product {item.productId}")
-            
-            unit_price = money(product.price_inr)
+
+            market_price = resolve_price(product.prices, country) if product.prices else None
+            unit_price = money(market_price.sellingPrice) if market_price else money(product.price_inr)
             total_price = money(unit_price * item.quantity)
-            
+
             validated_items.append(ValidatedOrderItem(
                 product_id=str(product.id),
                 product_name=product.name,
@@ -1116,13 +1174,13 @@ class OrderService:
                 total_price=total_price,
                 size=item.size
             ))
-        
+
         pricing = self._recalculate_pricing(validated_items)
         applied = None
         code = (order_data.couponCode or "").strip()
         if code:
-            pricing, applied = await DiscountService().apply(code, validated_items, pricing.shipping)
-        return validated_items, pricing, applied
+            pricing, applied = await DiscountService().apply(code, validated_items, pricing.shipping, country=country)
+        return validated_items, pricing, applied, region_audit
 
     async def _attach_checkout_account(self, order_data: OrderCreateInput) -> Optional[str]:
         addr = order_data.shippingAddress
@@ -1146,13 +1204,15 @@ class OrderService:
         return captured or order_data.user_id
     
     async def initiate_order(
-        self, order_data: OrderCreateInput, ip: Optional[str] = None
+        self, order_data: OrderCreateInput, ip: Optional[str] = None, user_agent: Optional[str] = None
     ) -> OrderInitiateResponseDTO:
         """Initiate order: validate, store in Redis, create Razorpay order"""
         if order_data.paymentMethod != "razorpay":
             raise ValueError("initiate_order only supports razorpay payment method")
 
-        validated_items, pricing, applied = await self._validate_and_prepare_order(order_data)
+        validated_items, pricing, applied, region_audit = await self._validate_and_prepare_order(
+            order_data, ip=ip, user_agent=user_agent
+        )
 
         fraud_ctx = FraudContext(
             event_type="order_initiate",
@@ -1161,6 +1221,12 @@ class OrderService:
             phone=order_data.shippingAddress.phone,
             endpoint="/api/orders/initiate",
             ip=ip,
+            user_agent=user_agent,
+            attributes={
+                "selected_country": region_audit.selected_country,
+                "ip_country": region_audit.ip_country,
+                "country_mismatch": region_audit.country_mismatch,
+            },
         )
         decision = await FraudDetectionService().evaluate(ctx=fraud_ctx, payload=order_data.model_dump())
         if decision.action == FraudAction.REJECT:
@@ -1193,11 +1259,12 @@ class OrderService:
             "payment_status": "pending",
             "status": OrderStatus(type="accepted").model_dump(),
             "created_at": datetime.utcnow().isoformat(),
-            "raw_order_log": raw_order_log
+            "raw_order_log": raw_order_log,
+            "region_audit": region_audit.model_dump(mode="json"),
         }
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
-        
+
         redis = await redis_client.get_client()
         redis_key = f"pending_order:{order_id}"
         await redis.setex(

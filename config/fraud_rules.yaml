@@ -42,6 +42,18 @@ groups:
       action: reject
       risk: 85
 
+  - id: region
+    enabled: true
+    defaults:
+      group: region
+      severity: low
+      confidence: 60
+      priority: 40
+      # Must never be "reject" — a country mismatch (VPN, travel, gift
+      # order, etc.) is signal for a human to look at, not proof of fraud.
+      action: manual_review
+      risk: 40
+
 rules:
   - id: email_disposable_domain
     name: Disposable email domain
@@ -116,6 +128,16 @@ rules:
         op: equals
         value: true
     tags: ["duplicate_order"]
+
+  - id: region_country_mismatch
+    name: IP country does not match selected country
+    enabled: true
+    group: region
+    when:
+      - field: attributes.country_mismatch
+        op: equals
+        value: true
+    tags: ["geo", "region"]
 
   - id: high_value_order
     name: High value order manual review

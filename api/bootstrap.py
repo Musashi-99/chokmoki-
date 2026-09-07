@@ -104,6 +104,7 @@ try:
     from src.services.user_service import UserService
     from src.services.customer_auth_service import CustomerAuthService
     from src.services.pincode_service import PincodeService
+    from src.pricing.geo_provider import GeoIPDiscoveryAdapter
 except Exception as e:
     print(f"Import error: {e}", file=sys.stderr)
     db = None
@@ -212,3 +213,4 @@ except Exception as e:
     UserService = None
     CustomerAuthService = None
     PincodeService = None
+    GeoIPDiscoveryAdapter = None

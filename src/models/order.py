@@ -49,6 +49,13 @@ class OrderCreateInput(BaseModel):
     timestamp: str
     paymentMethod: Optional[Literal["razorpay", "cod"]] = "cod"
     couponCode: Optional[str] = None
+    # The pricing market the storefront had active at checkout (explicit
+    # selection, or the first-visit GeoIP guess if the customer never
+    # changed it) — "IN" | "AU" | "NZ" | "default". Used to price the order
+    # and, together with the server-derived IP country, to build the
+    # region audit trail / fraud mismatch check. Never trusted for pricing
+    # math itself beyond picking which MarketPrice bucket to use.
+    selectedCountry: Optional[str] = None
     # Set server-side only (api/routes/orders.py resolves it from the
     # customer auth cookie, if present) — never trust a client-supplied
     # value here, or anyone could claim someone else's account on an order.
@@ -106,6 +113,22 @@ class ShippingAddressInOrder(BaseModel):
     updated_at: Optional[str] = None
 
 
+class RegionAudit(BaseModel):
+    """Full evidence trail for the region/pricing decision made on this
+    order — kept as verbose as possible so an admin reviewing a flagged
+    order never has to go dig through logs."""
+    ip: Optional[str] = None
+    ip_country: Optional[str] = None                       # GeoIP-resolved bucket (IN/AU/NZ/default)
+    ip_country_raw: Optional[str] = None                   # raw ISO code from the provider, pre-mapping
+    selected_country: Optional[str] = None                 # from the client at checkout
+    detected_country_at_bootstrap: Optional[str] = None    # first-visit GeoIP guess, if still known client-side
+    pricing_country_used: str                              # which MarketPrice bucket was actually applied
+    country_mismatch: bool = False
+    user_agent: Optional[str] = None
+    geoip_raw_response: Optional[Dict[str, Any]] = None    # full adapter payload, evidence for admin review
+    resolved_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Order(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     order_id: str
@@ -129,6 +152,7 @@ class Order(BaseModel):
     status: OrderStatus = Field(default_factory=lambda: OrderStatus(type="accepted"))
     created_at: datetime = Field(default_factory=datetime.utcnow)
     raw_order_log: Dict[str, Any]  # Keep as dict for raw log flexibility
+    region_audit: Optional[RegionAudit] = None
 
     # --- Warehouse fulfillment + Shiprocket shipping (independent of
     # payment_status and status.type — see src/services/shiprocket_service.py)

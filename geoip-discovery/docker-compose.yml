@@ -1,0 +1,28 @@
+services:
+  geoip:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - geoip-data:/data
+    command:
+      - -addr
+      - :8080
+      - -cache-mb
+      - "200"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+volumes:
+  geoip-data:

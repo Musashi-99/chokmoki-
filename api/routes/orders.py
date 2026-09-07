@@ -112,6 +112,7 @@ async def api_create_order(
             order_data,
             ip=client_ip,
             correlation_id=getattr(request.state, "correlation_id", None),
+            user_agent=request.headers.get("user-agent"),
         )
     except HTTPException:
         if idem_storage_key:
@@ -192,7 +193,9 @@ async def api_initiate_order(
         order_data = OrderCreateInput(**payload)
         service = OrderService()
         client_ip = get_client_ip(request) if get_client_ip else None
-        result = await service.initiate_order(order_data, ip=client_ip)
+        result = await service.initiate_order(
+            order_data, ip=client_ip, user_agent=request.headers.get("user-agent")
+        )
     except HTTPException:
         if idem_storage_key:
             await idem_service.release_lock(idem_storage_key)

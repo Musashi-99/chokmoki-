@@ -19,8 +19,8 @@ async def preview_coupon(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         service = DiscountService()
-        items = await service.resolve_preview_items(body.items)
-        pricing, applied = await service.apply(body.code, items, shipping=0)
+        items = await service.resolve_preview_items(body.items, country=body.country)
+        pricing, applied = await service.apply(body.code, items, shipping=0, country=body.country)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if applied is None:

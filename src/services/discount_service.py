@@ -41,11 +41,24 @@ def coupon_product_ids(coupon: Any) -> list[str]:
     return []
 
 
+def _coupon_allows_country(coupon: Any, country: Optional[str]) -> bool:
+    countries = _attr_get(coupon, "countries") or None
+    if not countries:
+        return True
+    if not country:
+        return False
+    return country.upper() in {c.upper() for c in countries}
+
+
 def compute_discount(
     items: Sequence[Any],
     coupon: Any,
     shipping: float = 0,
+    country: Optional[str] = None,
 ) -> tuple[float, float, float]:
+    if not _coupon_allows_country(coupon, country):
+        raise ValueError("Coupon is not valid for this region")
+
     subtotal = money(sum(money(_attr(item, "total_price")) for item in items))
     coupon_type = _attr(coupon, "type")
     indicator = _attr(coupon, "indicator")
@@ -78,11 +91,16 @@ class DiscountService:
         items: Sequence[Any],
         coupon: Any,
         shipping: float = 0,
+        country: Optional[str] = None,
     ) -> tuple[float, float, float]:
-        return compute_discount(items, coupon, shipping)
+        return compute_discount(items, coupon, shipping, country=country)
 
     async def apply(
-        self, code: Optional[str], validated_items, shipping: float = 0
+        self,
+        code: Optional[str],
+        validated_items,
+        shipping: float = 0,
+        country: Optional[str] = None,
     ) -> tuple[PricingDTO, Optional[AppliedDiscount]]:
         items = validated_items or []
         if not (code or "").strip():
@@ -104,7 +122,7 @@ class DiscountService:
         if not coupon.active:
             raise ValueError("Coupon is not active")
 
-        computed, total, subtotal = compute_discount(items, coupon, shipping)
+        computed, total, subtotal = compute_discount(items, coupon, shipping, country=country)
         return (
             PricingDTO(
                 subtotal=subtotal,
@@ -125,8 +143,9 @@ class DiscountService:
             ),
         )
 
-    async def resolve_preview_items(self, items: Sequence[Any]) -> list:
+    async def resolve_preview_items(self, items: Sequence[Any], country: Optional[str] = None) -> list:
         from src.services.product_service import ProductService
+        from src.pricing.price_lookup import resolve_price
 
         product_service = ProductService()
         priced = []
@@ -138,10 +157,15 @@ class DiscountService:
                 raise ValueError(f"Product {product_id} not found")
             if not product.active:
                 raise ValueError(f"Product {product_id} is not active")
+            unit_price = (
+                resolve_price(product.prices, country or "default").sellingPrice
+                if product.prices
+                else product.price_inr
+            )
             priced.append(
                 SimpleNamespace(
                     product_id=str(product.id),
-                    total_price=money(Decimal(str(product.price_inr)) * int(quantity)),
+                    total_price=money(Decimal(str(unit_price)) * int(quantity)),
                 )
             )
         return priced
@@ -209,6 +233,7 @@ class CouponService:
             "amount": existing.amount,
             "indicator": existing.indicator,
             "product_ids": existing.product_ids,
+            "countries": existing.countries,
             "active": existing.active,
         }
         merged.update(payload)
