@@ -19,7 +19,7 @@ os.environ.setdefault("RAZORPAY_KEY_ID", "rzp_test")
 os.environ.setdefault("RAZORPAY_KEY_SECRET", "secret")
 
 from src.models.coupon import Coupon, DiscountIndicator, DiscountType
-from src.models.order import OrderCreateInput
+from src.models.order import OrderCreateInput, RegionAudit
 from src.services.discount_service import CouponService, compute_discount
 from src.services.order_service import OrderService
 
@@ -45,6 +45,10 @@ def _catalog_product(product_id: str = "p1", price: float = 2000):
         price_inr=price,
         active=True,
         product_variants=[],
+        # No multi-region prices configured — order_service falls back to
+        # price_inr for these coupon/pricing-math tests, same as before
+        # multi-region existed.
+        prices=[],
     )
 
 
@@ -133,6 +137,19 @@ def order_pipeline_mocks(coupon=None, product=None):
         inv_cls = stack.enter_context(patch("src.services.order_service.InventoryService"))
         inv_cls.return_value.commit_items = AsyncMock()
         inv_cls.return_value.reserve_for_order = AsyncMock()
+        # Multi-region checkout gating (order_service._resolve_region) always
+        # resolves to a real GeoIP lookup otherwise, which has no network
+        # access in tests and would fall through to "default" — rejected by
+        # CHECKOUT_ENABLED_COUNTRIES=IN. These tests are about coupon/pricing
+        # math, not region resolution, so pin it to India.
+        stack.enter_context(
+            patch.object(
+                OrderService,
+                "_resolve_region",
+                new_callable=AsyncMock,
+                return_value=RegionAudit(pricing_country_used="IN", selected_country="IN"),
+            )
+        )
         stack.enter_context(
             patch(
                 "src.database.connection.db.get_database",

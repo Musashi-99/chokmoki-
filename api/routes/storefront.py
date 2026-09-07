@@ -5,8 +5,9 @@ from fastapi.responses import JSONResponse
 import json
 from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, GeoIPDiscoveryAdapter, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, get_client_ip, settings
 from api.json_utils import JSONEncoder, _json_dumps, _json_response_content
-from src.models.product import MarketPrice
+from src.models.product import MarketPrice, MarketStock
 from src.pricing.price_lookup import resolve_price
+from src.pricing.stock_lookup import resolve_stock
 from src.pricing.resolvers import resolve_country
 from src.services.product_filters import parse_ids_query
 
@@ -42,6 +43,26 @@ def _apply_market_pricing(product: dict, country: str) -> dict:
     product["currency"] = match.currency
     product["sym"] = match.sym
     product["pricing_country"] = match.country
+    return product
+
+
+def _apply_market_stock(product: dict, country: str) -> dict:
+    """Attach the region-resolved stock_status/stock_qty onto a product
+    response, in place — mirrors _apply_market_pricing. Stock is tracked
+    per-region (src/models/product.py: MarketStock): a product can be sold
+    out in India while still in stock for Australia, so the frontend must
+    see the number for *this* customer's region, not a single global flag.
+    Untracked products (no `stock` rows at all) are left with no
+    stock_status/stock_qty — always purchasable, same as before."""
+    raw_stock = product.get("stock") or []
+    if not raw_stock:
+        return product
+    stock = [MarketStock(**s) for s in raw_stock]
+    match = resolve_stock(stock, country)
+    if match is None:
+        return product
+    product["stock_status"] = match.status
+    product["stock_qty"] = match.qty
     return product
 
 
@@ -90,7 +111,7 @@ async def api_list_products(
         is_best_seller=is_best_seller, is_curated=is_curated,
         ids=id_list,
     )
-    products = [_apply_market_pricing(p, country) for p in products]
+    products = [_apply_market_stock(_apply_market_pricing(p, country), country) for p in products]
     total = await service.count(
         active=True, category=category, search=search,
         is_best_seller=is_best_seller, is_curated=is_curated,
@@ -126,7 +147,7 @@ async def api_get_product(slug: str, request: Request):
         product.model_dump(by_alias=True),
         cls=JSONEncoder
     ))
-    result = _apply_market_pricing(result, country)
+    result = _apply_market_stock(_apply_market_pricing(result, country), country)
     if cache:
         await cache.set(cache_key, _json_dumps(result), 300)
 

@@ -141,7 +141,6 @@ async def main() -> None:
         curated_order=random.randint(1, 20),
         weight_grams=round(random.uniform(3.5, 18.0), 1),
         purity="92.5% Sterling Silver",
-        stock_status="in_stock",
         active=True,
     )
 

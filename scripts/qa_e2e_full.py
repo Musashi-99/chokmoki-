@@ -132,7 +132,7 @@ def phase3(first_cat):
         "description": "QA test product", "sizes": ["6", "7", "8"],
         "is_best_seller": False, "is_curated": False,
         "best_seller_order": 99, "curated_order": 99,
-        "purity": "92.5% Sterling Silver", "stock_status": "in_stock", "active": True,
+        "purity": "92.5% Sterling Silver", "active": True,
     }
     r = req("POST", "/api/admin/products", auth=True, json_body=payload)
     check("create", r and r.status_code in (200, 201))

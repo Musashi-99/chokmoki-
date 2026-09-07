@@ -13,7 +13,7 @@ from bson import ObjectId
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.order import ValidatedOrderItem
+from src.models.order import RegionAudit, ValidatedOrderItem
 from src.services.inventory_service import InventoryService
 
 
@@ -143,9 +143,9 @@ class TestInventoryReserveAndRelease:
         ), patch.object(
             service, "_get_stock_qty", new_callable=AsyncMock, return_value=5
         ):
-            await service.reserve_for_order(order_id, [_item(product_id, 2)])
+            await service.reserve_for_order(order_id, [_item(product_id, 2)], "IN")
 
-        assert fake_redis.store[f"inv:pending:{product_id}"] == "2"
+        assert fake_redis.store[f"inv:pending:{product_id}:IN"] == "2"
         assert json.loads(fake_redis.store[f"inv:order:{order_id}"])[0]["quantity"] == 2
 
         with patch(
@@ -155,7 +155,7 @@ class TestInventoryReserveAndRelease:
         ):
             await service.release_reservation(order_id)
 
-        assert f"inv:pending:{product_id}" not in fake_redis.store
+        assert f"inv:pending:{product_id}:IN" not in fake_redis.store
         assert f"inv:order:{order_id}" not in fake_redis.store
 
     @pytest.mark.asyncio
@@ -168,7 +168,7 @@ class TestInventoryReserveAndRelease:
         monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
 
         service = InventoryService()
-        fake_redis.store[f"inv:pending:{product_id}"] = "4"
+        fake_redis.store[f"inv:pending:{product_id}:IN"] = "4"
 
         with patch(
             "src.services.inventory_service.redis_client.get_client",
@@ -178,10 +178,10 @@ class TestInventoryReserveAndRelease:
             service, "_get_stock_qty", new_callable=AsyncMock, return_value=5
         ):
             with pytest.raises(ValueError, match="Insufficient stock"):
-                await service.reserve_for_order("order-2", [_item(product_id, 2)])
+                await service.reserve_for_order("order-2", [_item(product_id, 2)], "IN")
 
         assert f"inv:order:order-2" not in fake_redis.store
-        assert fake_redis.store[f"inv:pending:{product_id}"] == "4"
+        assert fake_redis.store[f"inv:pending:{product_id}:IN"] == "4"
 
     @pytest.mark.asyncio
     async def test_skips_untracked_products(self, monkeypatch, fake_redis, product_id):
@@ -199,7 +199,7 @@ class TestInventoryReserveAndRelease:
         ), patch.object(
             service, "_get_stock_qty", new_callable=AsyncMock, return_value=None
         ):
-            await service.reserve_for_order("order-3", [_item(product_id, 1)])
+            await service.reserve_for_order("order-3", [_item(product_id, 1)], "IN")
 
         assert fake_redis.store == {}
 
@@ -219,7 +219,7 @@ class TestInventoryCommit:
         fake_redis.store[f"inv:order:{order_id}"] = json.dumps(
             [{"product_id": product_id, "quantity": 2}]
         )
-        fake_redis.store[f"inv:pending:{product_id}"] = "2"
+        fake_redis.store[f"inv:pending:{product_id}:default"] = "2"
 
         with patch(
             "src.services.inventory_service.redis_client.get_client",
@@ -232,9 +232,9 @@ class TestInventoryCommit:
         ):
             await service.commit_reservation(order_id)
 
-        decrement.assert_awaited_once_with(product_id, 2)
+        decrement.assert_awaited_once_with(product_id, "default", 2)
         assert f"inv:order:{order_id}" not in fake_redis.store
-        assert f"inv:pending:{product_id}" not in fake_redis.store
+        assert f"inv:pending:{product_id}:default" not in fake_redis.store
 
     @pytest.mark.asyncio
     async def test_commit_items_rejects_when_decrement_fails(
@@ -253,7 +253,7 @@ class TestInventoryCommit:
             service, "_atomic_decrement", new_callable=AsyncMock, return_value=False
         ):
             with pytest.raises(ValueError, match="Insufficient stock"):
-                await service.commit_items([_item(product_id, 2)])
+                await service.commit_items([_item(product_id, 2)], "IN")
 
 
 class TestInventoryReconcile:
@@ -268,7 +268,7 @@ class TestInventoryReconcile:
         fake_redis.store["inv:order:stale-order"] = json.dumps(
             [{"product_id": product_id, "quantity": 1}]
         )
-        fake_redis.store[f"inv:pending:{product_id}"] = "1"
+        fake_redis.store[f"inv:pending:{product_id}:default"] = "1"
         fake_redis.ttls["inv:order:stale-order"] = 30
         fake_redis.store["inv:order:fresh-order"] = json.dumps(
             [{"product_id": product_id, "quantity": 1}]
@@ -369,7 +369,13 @@ class TestOrderServiceInventoryHooks:
         )
 
         with patch.object(
-            service, "_validate_and_prepare_order", new_callable=AsyncMock, return_value=(validated, pricing, None)
+            service, "_validate_and_prepare_order", new_callable=AsyncMock,
+            return_value=(
+                validated,
+                pricing,
+                None,
+                RegionAudit(pricing_country_used="IN", selected_country="IN", ip_country="IN"),
+            ),
         ), patch(
             "src.services.order_service.FraudDetectionService.evaluate",
             new_callable=AsyncMock,

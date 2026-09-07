@@ -23,7 +23,6 @@ COMMON = {
     "returns_policy": "14-day returns on unworn pieces in original packaging.",
     "authenticity_details": "Certified 92.5% sterling silver with studio authenticity card.",
     "purity": "92.5% Sterling Silver",
-    "stock_status": "in_stock",
     "active": True,
     "weight_grams": 8.5,
 }

@@ -1,4 +1,13 @@
-"""Product inventory reservations, atomic decrements, and reconciliation."""
+"""Product inventory reservations, atomic decrements, and reconciliation.
+
+Stock is tracked per-region (src/models/product.py: MarketStock), not as a
+single global number — a product can be sold out in India while still
+available in Australia, and every operation here resolves against the
+*specific* country an order is actually for (via src/pricing/stock_lookup.py
++ resolvers.py's same country-resolution chain pricing uses), never a
+guess. All Redis/Mongo state below is keyed by (product_id, resolved
+country) accordingly.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +23,8 @@ from src.config import settings
 from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.order import ValidatedOrderItem
+from src.models.product import MarketStock
+from src.pricing.stock_lookup import resolve_stock
 from src.plugins.logger import logger
 
 
@@ -21,6 +32,11 @@ from src.plugins.logger import logger
 class ReservationLine:
     product_id: str
     quantity: int
+    # The stock bucket actually resolved against at reservation time (e.g.
+    # "IN", or "default" for AU/NZ/ROW customers) — persisted so commit/
+    # release later target the same bucket, not whatever country happens
+    # to be in scope (there may be none) when those run.
+    country: str
 
 
 class InventoryService:
@@ -56,60 +72,74 @@ class InventoryService:
         return stock_qty is not None
 
     @staticmethod
-    def _pending_key(product_id: str) -> str:
-        return f"{InventoryService.PENDING_QTY_PREFIX}{product_id}"
+    def _pending_key(product_id: str, country: str) -> str:
+        return f"{InventoryService.PENDING_QTY_PREFIX}{product_id}:{country}"
 
     @staticmethod
     def _reservation_key(order_id: str) -> str:
         return f"{InventoryService.RESERVATION_PREFIX}{order_id}"
 
     @staticmethod
-    def _lock_key(product_id: str) -> str:
-        return f"{InventoryService.LOCK_PREFIX}{product_id}"
+    def _lock_key(product_id: str, country: str) -> str:
+        return f"{InventoryService.LOCK_PREFIX}{product_id}:{country}"
 
-    async def _get_stock_qty(self, product_id: str) -> Optional[int]:
-        database = await db.get_database()
-        collection = database[self.COLLECTION_NAME]
-        filt: Dict[str, Any]
+    async def _product_filter(self, collection, product_id: str) -> Optional[Dict[str, Any]]:
         if ObjectId.is_valid(product_id):
-            filt = {"_id": ObjectId(product_id)}
-        else:
-            doc = await collection.find_one({"slug": product_id}, {"_id": 1})
-            if not doc:
-                return None
-            filt = {"_id": doc["_id"]}
-
-        doc = await collection.find_one(filt, {"stock_qty": 1})
+            return {"_id": ObjectId(product_id)}
+        doc = await collection.find_one({"slug": product_id}, {"_id": 1})
         if not doc:
             return None
-        value = doc.get("stock_qty")
-        if value is None:
-            return None
-        return int(value)
+        return {"_id": doc["_id"]}
 
-    async def _acquire_product_lock(self, product_id: str) -> bool:
+    async def _get_stock_entry(
+        self, product_id: str, country: str
+    ) -> Optional[MarketStock]:
+        """The resolved region's stock row (its own country, e.g. "default"
+        for a market with no dedicated row) — or None if this product
+        doesn't track inventory anywhere."""
+        database = await db.get_database()
+        collection = database[self.COLLECTION_NAME]
+        filt = await self._product_filter(collection, product_id)
+        if filt is None:
+            return None
+        doc = await collection.find_one(filt, {"stock": 1})
+        if not doc:
+            return None
+        raw = doc.get("stock") or []
+        if not raw:
+            return None
+        stock_list = [MarketStock(**s) for s in raw]
+        return resolve_stock(stock_list, country)
+
+    async def _get_stock_qty(self, product_id: str, country: str) -> Optional[int]:
+        entry = await self._get_stock_entry(product_id, country)
+        if entry is None:
+            return None
+        return entry.qty
+
+    async def _acquire_product_lock(self, product_id: str, country: str) -> bool:
         redis = await redis_client.get_client()
         return bool(
             await redis.set(
-                self._lock_key(product_id),
+                self._lock_key(product_id, country),
                 "1",
                 nx=True,
                 ex=self.LOCK_TTL_SECONDS,
             )
         )
 
-    async def _release_product_lock(self, product_id: str) -> None:
+    async def _release_product_lock(self, product_id: str, country: str) -> None:
         redis = await redis_client.get_client()
-        await redis.delete(self._lock_key(product_id))
+        await redis.delete(self._lock_key(product_id, country))
 
-    async def _get_pending_qty(self, product_id: str) -> int:
+    async def _get_pending_qty(self, product_id: str, country: str) -> int:
         redis = await redis_client.get_client()
-        raw = await redis.get(self._pending_key(product_id))
+        raw = await redis.get(self._pending_key(product_id, country))
         return int(raw or 0)
 
-    async def _adjust_pending_qty(self, product_id: str, delta: int) -> None:
+    async def _adjust_pending_qty(self, product_id: str, country: str, delta: int) -> None:
         redis = await redis_client.get_client()
-        key = self._pending_key(product_id)
+        key = self._pending_key(product_id, country)
         if delta > 0:
             await redis.incrby(key, delta)
             return
@@ -117,74 +147,81 @@ class InventoryService:
         if new_value <= 0:
             await redis.delete(key)
 
-    async def _atomic_decrement(self, product_id: str, quantity: int) -> bool:
+    async def _atomic_decrement(self, product_id: str, country: str, quantity: int) -> bool:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
-        filt: Dict[str, Any]
-        if ObjectId.is_valid(product_id):
-            filt = {"_id": ObjectId(product_id)}
-        else:
-            doc = await collection.find_one({"slug": product_id}, {"_id": 1})
-            if not doc:
-                return False
-            filt = {"_id": doc["_id"]}
+        filt = await self._product_filter(collection, product_id)
+        if filt is None:
+            return False
 
         updated = await collection.find_one_and_update(
-            {**filt, "stock_qty": {"$gte": quantity}},
-            {"$inc": {"stock_qty": -quantity}},
+            {
+                **filt,
+                "stock": {"$elemMatch": {"country": country, "qty": {"$gte": quantity}}},
+            },
+            {"$inc": {"stock.$[elem].qty": -quantity}},
+            array_filters=[{"elem.country": country}],
             return_document=ReturnDocument.AFTER,
         )
         if not updated:
             return False
 
-        if int(updated.get("stock_qty", 0)) <= 0:
-            await collection.update_one(filt, {"$set": {"stock_status": "out_of_stock"}})
-        else:
-            await collection.update_one(filt, {"$set": {"stock_status": "in_stock"}})
+        remaining = next(
+            (s.get("qty") for s in (updated.get("stock") or []) if s.get("country") == country),
+            None,
+        )
+        status = "out_of_stock" if (remaining is not None and remaining <= 0) else "in_stock"
+        await collection.update_one(
+            filt,
+            {"$set": {"stock.$[elem].status": status}},
+            array_filters=[{"elem.country": country}],
+        )
         return True
 
-    async def _sync_availability_status(self, product_id: str) -> None:
+    async def _sync_availability_status(self, product_id: str, country: str) -> None:
         try:
-            stock_qty = await self._get_stock_qty(product_id)
-            if not self.tracks_inventory(stock_qty):
+            entry = await self._get_stock_entry(product_id, country)
+            if entry is None or entry.qty is None:
                 return
-            pending = await self._get_pending_qty(product_id)
-            available = int(stock_qty) - pending
+            pending = await self._get_pending_qty(product_id, country)
+            available = int(entry.qty) - pending
             database = await db.get_database()
             collection = database[self.COLLECTION_NAME]
-            if ObjectId.is_valid(product_id):
-                filt: Dict[str, Any] = {"_id": ObjectId(product_id)}
-            else:
-                doc = await collection.find_one({"slug": product_id}, {"_id": 1})
-                if not doc:
-                    return
-                filt = {"_id": doc["_id"]}
+            filt = await self._product_filter(collection, product_id)
+            if filt is None:
+                return
             status = "out_of_stock" if available <= 0 else "in_stock"
-            await collection.update_one(filt, {"$set": {"stock_status": status}})
+            await collection.update_one(
+                filt,
+                {"$set": {"stock.$[elem].status": status}},
+                array_filters=[{"elem.country": country}],
+            )
         except Exception as e:
-            logger.warning(f"Inventory availability status sync failed for {product_id}: {e}")
+            logger.warning(
+                f"Inventory availability status sync failed for {product_id}/{country}: {e}"
+            )
 
-    async def _reserve_product(self, product_id: str, quantity: int) -> None:
-        stock_qty = await self._get_stock_qty(product_id)
+    async def _reserve_product(self, product_id: str, country: str, quantity: int) -> None:
+        stock_qty = await self._get_stock_qty(product_id, country)
         if not self.tracks_inventory(stock_qty):
             return
 
-        if not await self._acquire_product_lock(product_id):
+        if not await self._acquire_product_lock(product_id, country):
             raise ValueError(f"Inventory lock unavailable for product {product_id}")
 
         try:
-            pending = await self._get_pending_qty(product_id)
+            pending = await self._get_pending_qty(product_id, country)
             available = int(stock_qty) - pending
             if quantity > available:
                 raise ValueError(f"Insufficient stock for product {product_id}")
 
-            await self._adjust_pending_qty(product_id, quantity)
-            await self._sync_availability_status(product_id)
+            await self._adjust_pending_qty(product_id, country, quantity)
+            await self._sync_availability_status(product_id, country)
         finally:
-            await self._release_product_lock(product_id)
+            await self._release_product_lock(product_id, country)
 
     async def reserve_for_order(
-        self, order_id: str, items: List[ValidatedOrderItem]
+        self, order_id: str, items: List[ValidatedOrderItem], country: str
     ) -> None:
         if not settings.inventory_enabled:
             return
@@ -193,13 +230,13 @@ class InventoryService:
         redis = await redis_client.get_client()
         try:
             for item in items:
-                stock_qty = await self._get_stock_qty(item.product_id)
+                stock_qty = await self._get_stock_qty(item.product_id, country)
                 if not self.tracks_inventory(stock_qty):
                     continue
-                await self._reserve_product(item.product_id, item.quantity)
+                await self._reserve_product(item.product_id, country, item.quantity)
                 reserved.append(
                     ReservationLine(
-                        product_id=item.product_id, quantity=item.quantity
+                        product_id=item.product_id, quantity=item.quantity, country=country
                     )
                 )
 
@@ -208,7 +245,7 @@ class InventoryService:
 
             payload = json.dumps(
                 [
-                    {"product_id": line.product_id, "quantity": line.quantity}
+                    {"product_id": line.product_id, "quantity": line.quantity, "country": line.country}
                     for line in reserved
                 ]
             )
@@ -230,7 +267,7 @@ class InventoryService:
                     "$setOnInsert": {
                         "order_id": order_id,
                         "lines": [
-                            {"product_id": line.product_id, "quantity": line.quantity}
+                            {"product_id": line.product_id, "quantity": line.quantity, "country": line.country}
                             for line in reserved
                         ],
                         "status": "reserved",
@@ -242,7 +279,7 @@ class InventoryService:
             )
         except Exception:
             for line in reserved:
-                await self._adjust_pending_qty(line.product_id, -line.quantity)
+                await self._adjust_pending_qty(line.product_id, line.country, -line.quantity)
             await redis.delete(self._reservation_key(order_id))
             raise
 
@@ -253,7 +290,14 @@ class InventoryService:
             return []
         data = json.loads(raw)
         return [
-            ReservationLine(product_id=str(row["product_id"]), quantity=int(row["quantity"]))
+            ReservationLine(
+                product_id=str(row["product_id"]),
+                quantity=int(row["quantity"]),
+                # Reservations written before per-region stock shipped have
+                # no "country" field — "default" is the only bucket that
+                # ever existed for them, so it's the correct read-back value.
+                country=str(row.get("country", "default")),
+            )
             for row in data
         ]
 
@@ -281,19 +325,23 @@ class InventoryService:
             if not from_mirror:
                 return
             lines = [
-                ReservationLine(product_id=str(l["product_id"]), quantity=int(l["quantity"]))
+                ReservationLine(
+                    product_id=str(l["product_id"]),
+                    quantity=int(l["quantity"]),
+                    country=str(l.get("country", "default")),
+                )
                 for l in from_mirror["lines"]
             ]
 
         for line in lines:
-            if not await self._atomic_decrement(line.product_id, line.quantity):
+            if not await self._atomic_decrement(line.product_id, line.country, line.quantity):
                 logger.error(
                     f"Inventory commit failed for order {order_id} product {line.product_id}"
                 )
                 raise ValueError(f"Insufficient stock for product {line.product_id}")
 
         for line in lines:
-            await self._adjust_pending_qty(line.product_id, -line.quantity)
+            await self._adjust_pending_qty(line.product_id, line.country, -line.quantity)
         redis = await redis_client.get_client()
         await redis.delete(self._reservation_key(order_id))
         if from_mirror is None:
@@ -301,38 +349,39 @@ class InventoryService:
             # reconcile_stale_reservations doesn't try to process it again.
             await self._resolve_durable_mirror(order_id, "committed")
 
-    async def commit_items(self, items: List[ValidatedOrderItem]) -> None:
+    async def commit_items(self, items: List[ValidatedOrderItem], country: str) -> None:
         if not settings.inventory_enabled:
             return
 
         for item in items:
-            stock_qty = await self._get_stock_qty(item.product_id)
+            stock_qty = await self._get_stock_qty(item.product_id, country)
             if not self.tracks_inventory(stock_qty):
                 continue
-            if not await self._atomic_decrement(item.product_id, item.quantity):
+            if not await self._atomic_decrement(item.product_id, country, item.quantity):
                 raise ValueError(f"Insufficient stock for product {item.product_id}")
 
-    async def release_committed_items(self, items: List[ValidatedOrderItem]) -> None:
+    async def release_committed_items(
+        self, items: List[ValidatedOrderItem], country: str
+    ) -> None:
         """Reverse commit_items() when the following order write never landed."""
         if not settings.inventory_enabled:
             return
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
         for item in items:
-            stock_qty = await self._get_stock_qty(item.product_id)
+            stock_qty = await self._get_stock_qty(item.product_id, country)
             if not self.tracks_inventory(stock_qty):
                 continue
-            filt: Dict[str, Any]
-            if ObjectId.is_valid(item.product_id):
-                filt = {"_id": ObjectId(item.product_id)}
-            else:
-                doc = await collection.find_one({"slug": item.product_id}, {"_id": 1})
-                if not doc:
-                    continue
-                filt = {"_id": doc["_id"]}
+            filt = await self._product_filter(collection, item.product_id)
+            if filt is None:
+                continue
             await collection.update_one(
                 filt,
-                {"$inc": {"stock_qty": item.quantity}, "$set": {"stock_status": "in_stock"}},
+                {
+                    "$inc": {"stock.$[elem].qty": item.quantity},
+                    "$set": {"stock.$[elem].status": "in_stock"},
+                },
+                array_filters=[{"elem.country": country}],
             )
 
     async def release_reservation(self, order_id: str) -> None:
@@ -343,13 +392,17 @@ class InventoryService:
             if not from_mirror:
                 return
             lines = [
-                ReservationLine(product_id=str(l["product_id"]), quantity=int(l["quantity"]))
+                ReservationLine(
+                    product_id=str(l["product_id"]),
+                    quantity=int(l["quantity"]),
+                    country=str(l.get("country", "default")),
+                )
                 for l in from_mirror["lines"]
             ]
 
         for line in lines:
-            await self._adjust_pending_qty(line.product_id, -line.quantity)
-            await self._sync_availability_status(line.product_id)
+            await self._adjust_pending_qty(line.product_id, line.country, -line.quantity)
+            await self._sync_availability_status(line.product_id, line.country)
         redis = await redis_client.get_client()
         await redis.delete(self._reservation_key(order_id))
         if from_mirror is None:

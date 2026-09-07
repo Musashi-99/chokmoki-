@@ -530,13 +530,13 @@ class OrderService:
             raise ValueError("Order rejected")
 
         inventory_service = InventoryService()
-        await inventory_service.commit_items(validated_items)
+        await inventory_service.commit_items(validated_items, region_audit.pricing_country_used)
         committed_items = validated_items
 
         database = await db.get_database()
         orders_collection = database[self.COLLECTION_NAME]
         logs_collection = database[self.ORDER_LOGS_COLLECTION]
-        
+
         raw_order_log = order_data.model_dump()
         order_id = str(uuid.uuid4())
         raw_order_log["order_id"] = order_id
@@ -572,7 +572,9 @@ class OrderService:
         try:
             result = await orders_collection.insert_one(order_dict)
         except Exception:
-            await inventory_service.release_committed_items(committed_items)
+            await inventory_service.release_committed_items(
+                committed_items, region_audit.pricing_country_used
+            )
             raise
         order_dict["_id"] = result.inserted_id
 
@@ -747,17 +749,23 @@ class OrderService:
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
 
+        # Admin manual orders use price_inr directly (no GeoIP/region
+        # resolution in this path) — India is the only market this flow has
+        # ever supported, so it's the correct stock bucket to decrement.
+        admin_order_country = "IN"
         inventory_service = InventoryService()
         committed_items: List[ValidatedOrderItem] = []
         if payment_status == "completed":
-            await inventory_service.commit_items(validated_items)
+            await inventory_service.commit_items(validated_items, admin_order_country)
             committed_items = validated_items
 
         try:
             result = await orders_collection.insert_one(order_dict)
         except Exception:
             if committed_items:
-                await inventory_service.release_committed_items(committed_items)
+                await inventory_service.release_committed_items(
+                    committed_items, admin_order_country
+                )
             raise
         order_dict["_id"] = result.inserted_id
 
@@ -1234,7 +1242,9 @@ class OrderService:
         
         order_id = str(uuid.uuid4())
         inventory_service = InventoryService()
-        await inventory_service.reserve_for_order(order_id, validated_items)
+        await inventory_service.reserve_for_order(
+            order_id, validated_items, region_audit.pricing_country_used
+        )
 
         raw_order_log = order_data.model_dump()
         raw_order_log["order_id"] = order_id

@@ -82,6 +82,57 @@ def _validate_market_prices(prices: List["MarketPrice"]) -> List["MarketPrice"]:
     return prices
 
 
+class MarketStock(BaseModel):
+    """One country's inventory for a product — stock is per-region, not a
+    single global number, because a product can be sold out in one market
+    (e.g. India) while still available in another (e.g. Australia), and
+    checkout must verify against the *specific* region the order is for —
+    never a guess. "default" is the fallback bucket for every country
+    outside the configured markets (mandatory once any region row exists,
+    same rule as MarketPrice).
+
+    qty=None means this region doesn't track inventory at all — always
+    purchasable, never "out of stock" — the same semantics the old
+    product-level stock_qty had, just resolved per-region now.
+    """
+    country: str          # "IN" | "AU" | "NZ" | "default"
+    qty: Optional[int] = None
+    status: str = "in_stock"   # "in_stock" | "out_of_stock"
+
+    @field_validator("country")
+    @classmethod
+    def _upper_country(cls, v):
+        v = (v or "").strip()
+        return v if v == "default" else v.upper()
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v):
+        if v not in ("in_stock", "out_of_stock"):
+            raise ValueError("status must be 'in_stock' or 'out_of_stock'")
+        return v
+
+    @field_validator("qty")
+    @classmethod
+    def _non_negative_qty(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("qty cannot be negative")
+        return v
+
+
+def _validate_market_stock(stock: List["MarketStock"]) -> List["MarketStock"]:
+    if not stock:
+        return stock
+    seen = set()
+    for s in stock:
+        if s.country in seen:
+            raise ValueError(f"Duplicate stock entry for country '{s.country}'")
+        seen.add(s.country)
+    if "default" not in seen:
+        raise ValueError("stock must include a 'default' fallback entry")
+    return stock
+
+
 class JewelryProduct(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     slug: str
@@ -110,8 +161,7 @@ class JewelryProduct(BaseModel):
     package_breadth_cm: Optional[float] = None
     package_height_cm: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
-    stock_status: str = "in_stock"
-    stock_qty: Optional[int] = None
+    stock: List[MarketStock] = Field(default_factory=list)
     active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # Backward-compatible fields for order system
@@ -131,6 +181,11 @@ class JewelryProduct(BaseModel):
     @classmethod
     def _validate_prices(cls, v):
         return _validate_market_prices(v)
+
+    @field_validator("stock")
+    @classmethod
+    def _validate_stock(cls, v):
+        return _validate_market_stock(v)
 
     @model_validator(mode="after")
     def _sync_legacy_inr(self):
@@ -178,8 +233,7 @@ class JewelryProductCreate(BaseModel):
     package_breadth_cm: Optional[float] = None
     package_height_cm: Optional[float] = None
     purity: str = "92.5% Sterling Silver"
-    stock_status: str = "in_stock"
-    stock_qty: Optional[int] = None
+    stock: List[MarketStock] = Field(default_factory=list)
     active: bool = True
 
     @field_validator("price_inr")
@@ -195,6 +249,11 @@ class JewelryProductCreate(BaseModel):
     @classmethod
     def _validate_prices(cls, v):
         return _validate_market_prices(v)
+
+    @field_validator("stock")
+    @classmethod
+    def _validate_stock(cls, v):
+        return _validate_market_stock(v)
 
     @model_validator(mode="after")
     def _sync_legacy_inr(self):
@@ -235,8 +294,7 @@ class JewelryProductUpdate(StrictUpdateModel):
     package_breadth_cm: Optional[float] = None
     package_height_cm: Optional[float] = None
     purity: Optional[str] = None
-    stock_status: Optional[str] = None
-    stock_qty: Optional[int] = None
+    stock: Optional[List[MarketStock]] = None
     active: Optional[bool] = None
 
     @field_validator("price_inr")
@@ -256,6 +314,13 @@ class JewelryProductUpdate(StrictUpdateModel):
         if v is None:
             return v
         return _validate_market_prices(v)
+
+    @field_validator("stock")
+    @classmethod
+    def _validate_stock(cls, v):
+        if v is None:
+            return v
+        return _validate_market_stock(v)
 
     @model_validator(mode="after")
     def _sync_legacy_inr(self):

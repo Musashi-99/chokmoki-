@@ -41,6 +41,12 @@ class CountryResolutionHandler(ABC):
 class UserSelectedCountryHandler(CountryResolutionHandler):
     def resolve(self, ctx: PricingContext) -> Optional[str]:
         code = (ctx.selected_country or "").strip().upper()
+        # "ROW" ("Rest of the World") is an explicit customer choice, not a
+        # market we price for — it must terminally resolve to the "default"
+        # (USD) bucket, never fall through to GeoIP, or picking it would be
+        # pointless for anyone GeoIP happens to place in a supported market.
+        if code == "ROW":
+            return "default"
         if code and code in supported_countries():
             return code
         return None

@@ -489,7 +489,7 @@ class TestCouponUpdateCompat:
 class TestResolvePreviewItems:
     @pytest.mark.asyncio
     async def test_uses_catalog_price_times_quantity(self):
-        product = SimpleNamespace(id="pid1", price_inr=1500, active=True)
+        product = SimpleNamespace(id="pid1", price_inr=1500, active=True, prices=[])
         mock_svc = MagicMock()
         mock_svc.get_by_id = AsyncMock(return_value=product)
         with patch("src.services.product_service.ProductService", return_value=mock_svc):
