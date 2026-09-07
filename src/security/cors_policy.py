@@ -17,6 +17,11 @@ ALLOWED_CORS_HEADERS = [
     "X-CSRF-Token",
     # Storefront sends this on order creation (IDEMPOTENCY_REQUIRED_IN_PRODUCTION).
     "Idempotency-Key",
+    # Storefront sends this on every request (src/lib/api.ts) so the backend
+    # can resolve multi-region pricing from the user's explicit country
+    # choice, not just GeoIP. Missing from here breaks every storefront API
+    # call's CORS preflight (400 "Disallowed CORS headers").
+    "X-Selected-Country",
 ]
 EXPOSED_CORS_HEADERS = ["X-Request-Id"]
 CORS_MAX_AGE_SECONDS = 600
